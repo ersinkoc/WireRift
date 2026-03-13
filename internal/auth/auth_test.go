@@ -1,0 +1,181 @@
+package auth
+
+import (
+	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+)
+
+func TestNewManager(t *testing.T) {
+	m := NewManager()
+	if m == nil {
+		t.Fatal("NewManager returned nil")
+	}
+}
+
+func TestTokenValidation(t *testing.T) {
+	m := NewManager()
+
+	token, account, err := m.ValidateToken(m.devToken.Secret)
+	if err != nil {
+		t.Fatalf("ValidateToken: %v", err)
+	}
+	if token == nil {
+		t.Fatal("Token should not be nil")
+	}
+	if account == nil {
+		t.Fatal("Account should not be nil")
+	}
+	if account.ID != "dev_account" {
+		t.Errorf("Account ID = %q, want %q", account.ID, "dev_account")
+	}
+}
+
+func TestInvalidToken(t *testing.T) {
+	m := NewManager()
+
+	_, _, err := m.ValidateToken("invalid_token")
+	if err != ErrInvalidToken {
+		t.Errorf("Error = %v, want %v", err, ErrInvalidToken)
+	}
+}
+
+func TestTokenIsExpired(t *testing.T) {
+	// Not expired
+	token := &Token{
+		ID:        "test",
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(1 * time.Hour),
+	}
+	if token.IsExpired() {
+		t.Error("Token should not be expired")
+	}
+
+	// Expired
+	expiredToken := &Token{
+		ID:        "test",
+		CreatedAt: time.Now().Add(-2 * time.Hour),
+		ExpiresAt: time.Now().Add(-1 * time.Hour),
+	}
+	if !expiredToken.IsExpired() {
+		t.Error("Token should be expired")
+	}
+
+	// Never expires (zero time)
+	neverExpires := &Token{
+		ID:        "test",
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Time{},
+	}
+	if neverExpires.IsExpired() {
+		t.Error("Token with zero ExpiresAt should not expire")
+	}
+}
+
+func TestCreateAccount(t *testing.T) {
+	m := NewManager()
+
+	account, err := m.CreateAccount("test@example.com", "Test User")
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+	if account.Email != "test@example.com" {
+		t.Errorf("Email = %q, want %q", account.Email, "test@example.com")
+	}
+	if !account.Active {
+		t.Error("Account should be active")
+	}
+}
+
+func TestCreateAndRevokeToken(t *testing.T) {
+	m := NewManager()
+
+	// Create account and token
+	account, _ := m.CreateAccount("test@example.com", "Test User")
+	token, err := m.CreateToken(account.ID, "Test Token", 1*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateToken: %v", err)
+	}
+
+	// Validate token works
+	_, _, err = m.ValidateToken(token.Secret)
+	if err != nil {
+		t.Fatalf("ValidateToken: %v", err)
+	}
+
+	// Revoke token
+	m.RevokeToken(token.ID)
+
+	// Should fail now
+	_, _, err = m.ValidateToken(token.Secret)
+	if err != ErrInvalidToken {
+		t.Errorf("Error = %v, want %v", err, ErrInvalidToken)
+	}
+}
+
+func TestMiddleware(t *testing.T) {
+	m := NewManager()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := m.Middleware()
+	protected := middleware(handler)
+
+	// Test without auth
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	protected.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("Code = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	// Test with valid token
+	req = httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer "+m.devToken.Secret)
+	rec = httptest.NewRecorder()
+	protected.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("Code = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestBasicAuth(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := BasicAuth("admin", "secret")
+	protected := middleware(handler)
+
+	// Test without auth
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	protected.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("Code = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	// Test with valid credentials
+	req = httptest.NewRequest("GET", "/", nil)
+	auth := base64.StdEncoding.EncodeToString([]byte("admin:secret"))
+	req.Header.Set("Authorization", "Basic "+auth)
+	rec = httptest.NewRecorder()
+	protected.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("Code = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	// Test with invalid credentials
+	req = httptest.NewRequest("GET", "/", nil)
+	auth = base64.StdEncoding.EncodeToString([]byte("admin:wrong"))
+	req.Header.Set("Authorization", "Basic "+auth)
+	rec = httptest.NewRecorder()
+	protected.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("Code = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}

@@ -1,0 +1,37 @@
+run:
+  timeout: 5m
+  issues-exit-code: 1
+
+linters:
+  enable:
+    - gofmt
+    - goimports
+    - govet
+    - errcheck
+    - staticcheck
+    - ineffassign
+    - typecheck
+    - gosimple
+    - goconst
+    - gocyclo
+    - dupl
+    - misspell
+    - unconvert
+    - prealloc
+    - revive
+
+linters-settings:
+  gocyclo:
+    min-complexity: 15
+  goconst:
+    min-len: 3
+    min-occurrences: 3
+  dupl:
+    threshold: 100
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - dupl
+        - goconst
