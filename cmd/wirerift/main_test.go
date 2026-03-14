@@ -236,3 +236,118 @@ tunnels:
 		t.Errorf("Token = %q, want test-token", cfg.Token)
 	}
 }
+
+// TestLoadConfigWithQuotes tests config values with quotes
+func TestLoadConfigWithQuotes(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "quotes.yaml")
+
+	configContent := `server: "test.server:4443"
+token: 'my-token'
+`
+
+	if err := os.WriteFile(configFile, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	cfg, err := loadConfig(configFile)
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+
+	if cfg.Server != "test.server:4443" {
+		t.Errorf("Server = %q, want test.server:4443", cfg.Server)
+	}
+	if cfg.Token != "my-token" {
+		t.Errorf("Token = %q, want my-token", cfg.Token)
+	}
+}
+
+// TestLoadConfigEmptyFile tests loading an empty config file
+func TestLoadConfigEmptyFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "empty.yaml")
+
+	// Clear env to test defaults
+	os.Unsetenv("WIRERIFT_SERVER")
+	os.Unsetenv("WIRERIFT_TOKEN")
+
+	if err := os.WriteFile(configFile, []byte(""), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	cfg, err := loadConfig(configFile)
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+
+	if cfg.Server != "localhost:4443" {
+		t.Errorf("Server = %q, want localhost:4443", cfg.Server)
+	}
+	if cfg.Token != "" {
+		t.Errorf("Token = %q, want empty", cfg.Token)
+	}
+	if len(cfg.Tunnels) != 0 {
+		t.Errorf("Expected 0 tunnels, got %d", len(cfg.Tunnels))
+	}
+}
+
+// TestLoadConfigInvalidLine tests that invalid lines are skipped
+func TestLoadConfigInvalidLine(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "invalid.yaml")
+
+	configContent := `server: test.server
+invalid_line_without_colon
+token: test-token
+`
+
+	if err := os.WriteFile(configFile, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	cfg, err := loadConfig(configFile)
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+
+	if cfg.Server != "test.server" {
+		t.Errorf("Server = %q, want test.server", cfg.Server)
+	}
+	if cfg.Token != "test-token" {
+		t.Errorf("Token = %q, want test-token", cfg.Token)
+	}
+}
+
+// TestTunnelConfigStruct tests TunnelConfig struct fields
+func TestTunnelConfigStruct(t *testing.T) {
+	tc := TunnelConfig{
+		Type:      "http",
+		LocalPort: 8080,
+		Subdomain: "testapp",
+	}
+
+	if tc.Type != "http" {
+		t.Errorf("Type = %q, want http", tc.Type)
+	}
+	if tc.LocalPort != 8080 {
+		t.Errorf("LocalPort = %d, want 8080", tc.LocalPort)
+	}
+	if tc.Subdomain != "testapp" {
+		t.Errorf("Subdomain = %q, want testapp", tc.Subdomain)
+	}
+}
+
+// TestVersionVariables tests version variables are defined
+func TestVersionVariables(t *testing.T) {
+	// Version variables should be defined
+	if version == "" {
+		t.Error("version should be defined")
+	}
+	if commit == "" {
+		t.Error("commit should be defined")
+	}
+	if date == "" {
+		t.Error("date should be defined")
+	}
+}

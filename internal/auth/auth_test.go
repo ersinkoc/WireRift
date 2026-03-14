@@ -179,3 +179,87 @@ func TestBasicAuth(t *testing.T) {
 		t.Errorf("Code = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 }
+
+// TestDevToken tests the DevToken method
+func TestDevToken(t *testing.T) {
+	m := NewManager()
+
+	// DevToken should return the development token secret
+	token := m.DevToken()
+	if token == "" {
+		t.Error("DevToken should not be empty")
+	}
+
+	// DevToken should start with "dev_" prefix
+	if len(token) < 4 || token[:4] != "dev_" {
+		t.Errorf("DevToken should start with 'dev_', got: %s", token)
+	}
+}
+
+// TestMiddlewareInvalidAuthHeader tests middleware with invalid auth headers
+func TestMiddlewareInvalidAuthHeader(t *testing.T) {
+	m := NewManager()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := m.Middleware()
+	protected := middleware(handler)
+
+	// Test with Bearer prefix but empty token
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer ")
+	rec := httptest.NewRecorder()
+	protected.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("Code = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	// Test with non-Bearer prefix
+	req = httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
+	rec = httptest.NewRecorder()
+	protected.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("Code = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+// TestBasicAuthInvalidHeader tests BasicAuth with various invalid headers
+func TestBasicAuthInvalidHeader(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := BasicAuth("admin", "secret")
+	protected := middleware(handler)
+
+	// Test with Basic prefix but empty credentials
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Basic ")
+	rec := httptest.NewRecorder()
+	protected.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("Code = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	// Test with Basic prefix but invalid base64
+	req = httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Basic !!!invalid!!!")
+	rec = httptest.NewRecorder()
+	protected.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("Code = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	// Test with Basic prefix but missing colon in decoded string
+	req = httptest.NewRequest("GET", "/", nil)
+	auth := base64.StdEncoding.EncodeToString([]byte("adminonly"))
+	req.Header.Set("Authorization", "Basic "+auth)
+	rec = httptest.NewRecorder()
+	protected.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("Code = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}

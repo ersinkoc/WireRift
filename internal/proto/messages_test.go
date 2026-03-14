@@ -300,3 +300,20 @@ func BenchmarkDecodeJSONPayload(b *testing.B) {
 		DecodeJSONPayload(frame, &got)
 	}
 }
+
+// TestEncodeJSONPayloadError tests that EncodeJSONPayload returns an error for invalid values
+func TestEncodeJSONPayloadError(t *testing.T) {
+	// Try to encode a channel (cannot be marshaled to JSON)
+	ch := make(chan int)
+	_, err := EncodeJSONPayload(FrameAuthReq, ControlStreamID, ch)
+	if err == nil {
+		t.Error("Expected error when encoding channel, got nil")
+	}
+
+	// Try to encode a function (cannot be marshaled to JSON)
+	fn := func() {}
+	_, err = EncodeJSONPayload(FrameAuthReq, ControlStreamID, fn)
+	if err == nil {
+		t.Error("Expected error when encoding function, got nil")
+	}
+}

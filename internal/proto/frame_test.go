@@ -2,6 +2,8 @@ package proto
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"testing"
 )
 
@@ -285,5 +287,66 @@ func BenchmarkFrameDecode(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		r := bytes.NewReader(data)
 		ReadFrame(r)
+	}
+}
+
+// TestReadFrameErrors tests ReadFrame error handling
+func TestReadFrameErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    []byte
+		wantErr error
+	}{
+		{
+			name:    "invalid version",
+			data:    []byte{0x02, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+			wantErr: ErrInvalidVersion,
+		},
+		{
+			name:    "payload too large",
+			data:    []byte{Version, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01},
+			wantErr: ErrPayloadTooLarge,
+		},
+		{
+			name:    "header too short",
+			data:    []byte{Version, 0x01, 0x00, 0x00},
+			wantErr: io.ErrUnexpectedEOF,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := bytes.NewReader(tt.data)
+			_, err := ReadFrame(buf)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if tt.wantErr != nil && err != tt.wantErr {
+				// Some errors wrap the underlying error
+				if !errors.Is(err, tt.wantErr) && err.Error() != tt.wantErr.Error() {
+					t.Errorf("error = %v, want %v", err, tt.wantErr)
+				}
+			}
+		})
+	}
+}
+
+// TestReadMagicInsufficientData tests ReadMagic with insufficient data
+func TestReadMagicInsufficientData(t *testing.T) {
+	// Less than 4 bytes
+	buf := bytes.NewBuffer([]byte{0x57, 0x52})
+	err := ReadMagic(buf)
+	if err == nil {
+		t.Error("expected error for insufficient data")
+	}
+}
+
+// TestReadMagicPartialInvalid tests ReadMagic with partially invalid magic
+func TestReadMagicPartialInvalid(t *testing.T) {
+	// First two bytes correct, last two wrong
+	buf := bytes.NewBuffer([]byte{0x57, 0x52, 0x00, 0x00})
+	err := ReadMagic(buf)
+	if err != ErrInvalidMagic {
+		t.Errorf("error = %v, want %v", err, ErrInvalidMagic)
 	}
 }

@@ -786,3 +786,243 @@ func TestMuxAcceptStreamClosed(t *testing.T) {
 		t.Errorf("Expected io.EOF, got %v", err)
 	}
 }
+
+func TestMuxGetFrameReader(t *testing.T) {
+	client, server := newTestPipe(t)
+
+	// GetFrameReader should return the frame reader
+	reader := client.GetFrameReader()
+	if reader == nil {
+		t.Error("GetFrameReader should not return nil")
+	}
+
+	// Same reader should be returned
+	reader2 := client.GetFrameReader()
+	if reader != reader2 {
+		t.Error("GetFrameReader should return the same reader")
+	}
+
+	// Server should also have a reader
+	serverReader := server.GetFrameReader()
+	if serverReader == nil {
+		t.Error("Server GetFrameReader should not return nil")
+	}
+
+	client.Close()
+	server.Close()
+}
+
+func TestMuxSendDataFrame(t *testing.T) {
+	client, server := newTestPipe(t)
+
+	// Start run loops
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		client.Run()
+	}()
+	go func() {
+		defer wg.Done()
+		server.Run()
+	}()
+
+	// Accept stream on server in goroutine first
+	acceptCh := make(chan *Stream, 1)
+	go func() {
+		stream, err := server.AcceptStream()
+		if err != nil {
+			close(acceptCh)
+			return
+		}
+		acceptCh <- stream
+	}()
+
+	// Send STREAM_OPEN frame to create stream on server
+	openFrame, _ := proto.EncodeJSONPayload(proto.FrameStreamOpen, 2, &proto.StreamOpen{
+		RemoteAddr: "127.0.0.1:12345",
+		Protocol:   "test",
+	})
+	client.GetFrameWriter().Write(openFrame)
+
+	// Get accepted stream
+	serverStream := <-acceptCh
+	if serverStream == nil {
+		t.Fatal("AcceptStream failed")
+	}
+
+	// Send data using the frame writer directly
+	data := []byte("test data for frame")
+	dataFrame := &proto.Frame{
+		Version:  proto.Version,
+		Type:     proto.FrameStreamData,
+		StreamID: 2,
+		Payload:  data,
+	}
+	if err := client.GetFrameWriter().Write(dataFrame); err != nil {
+		t.Fatalf("Write data frame failed: %v", err)
+	}
+
+	// Read data on server
+	buf := make([]byte, len(data))
+	n, err := serverStream.Read(buf)
+	if err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+	if string(buf[:n]) != string(data) {
+		t.Errorf("Read = %q, want %q", string(buf[:n]), string(data))
+	}
+
+	serverStream.Close()
+	client.Close()
+	server.Close()
+	wg.Wait()
+}
+
+// TestStreamWrite tests Stream.Write functionality
+func TestStreamWrite(t *testing.T) {
+	client, server := newTestPipe(t)
+
+	// Start run loops
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		client.Run()
+	}()
+	go func() {
+		defer wg.Done()
+		server.Run()
+	}()
+
+	// Create stream on client
+	stream, err := client.OpenStream()
+	if err != nil {
+		t.Fatalf("OpenStream failed: %v", err)
+	}
+
+	// Write data
+	data := []byte("hello world")
+	n, err := stream.Write(data)
+	if err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+	if n != len(data) {
+		t.Errorf("Write returned %d, want %d", n, len(data))
+	}
+
+	stream.Close()
+	client.Close()
+	server.Close()
+	wg.Wait()
+}
+
+// TestStreamWriteClosed tests Stream.Write when stream is closed
+func TestStreamWriteClosed(t *testing.T) {
+	client, server := newTestPipe(t)
+	go server.Run()
+
+	stream, _ := client.OpenStream()
+
+	// Close the stream
+	stream.Close()
+
+	// Write should fail
+	_, err := stream.Write([]byte("test"))
+	if err != ErrStreamClosed {
+		t.Errorf("Expected ErrStreamClosed, got %v", err)
+	}
+
+	client.Close()
+	server.Close()
+}
+
+// TestStreamWriteReset tests Stream.Write when stream is reset
+func TestStreamWriteReset(t *testing.T) {
+	client, server := newTestPipe(t)
+	go server.Run()
+
+	stream, _ := client.OpenStream()
+
+	// Reset the stream
+	stream.Reset()
+
+	// Write should fail
+	_, err := stream.Write([]byte("test"))
+	if err != ErrStreamReset {
+		t.Errorf("Expected ErrStreamReset, got %v", err)
+	}
+
+	client.Close()
+	server.Close()
+}
+
+// TestStreamOnWindowUpdate tests window update handling
+func TestStreamOnWindowUpdate(t *testing.T) {
+	stream := newStream(1, nil, 100)
+
+	// Initial window should be 100
+	if stream.window.Load() != 100 {
+		t.Errorf("Initial window = %d, want 100", stream.window.Load())
+	}
+
+	// Apply window update
+	stream.onWindowUpdate(50)
+
+	// Window should now be 150
+	if stream.window.Load() != 150 {
+		t.Errorf("Window after update = %d, want 150", stream.window.Load())
+	}
+}
+
+// TestRingBufferWriteEmpty tests Write with empty data
+func TestRingBufferWriteEmpty(t *testing.T) {
+	rb := newRingBuffer(1024)
+	n, err := rb.Write([]byte{})
+	if err != nil {
+		t.Errorf("Write empty should not error: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("Write empty returned %d, want 0", n)
+	}
+}
+
+// TestRingBufferReadEmptyBuffer tests Read with empty buffer
+func TestRingBufferReadEmptyBuffer(t *testing.T) {
+	rb := newRingBuffer(1024)
+	p := make([]byte, 10)
+	n, err := rb.Read(p)
+	if err != nil {
+		t.Errorf("Read from empty should not error: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("Read from empty returned %d, want 0", n)
+	}
+}
+
+// TestStreamCleanup tests stream cleanup functionality
+func TestStreamCleanup(t *testing.T) {
+	client, _ := newTestPipe(t)
+
+	stream := newStream(1, client, 1000)
+	client.streams.Store(uint32(1), stream)
+
+	// Set cleanup callback
+	cleanupCalled := false
+	stream.onClose = func() {
+		cleanupCalled = true
+	}
+
+	// Call cleanup
+	stream.cleanup()
+
+	if !cleanupCalled {
+		t.Error("onClose callback should be called during cleanup")
+	}
+
+	// Stream should be removed from mux
+	if _, ok := client.getStream(1); ok {
+		t.Error("Stream should be removed from mux")
+	}
+}
+
