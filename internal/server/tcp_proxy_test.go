@@ -183,3 +183,105 @@ func TestTCPTunnelCloseMultiple(t *testing.T) {
 		t.Errorf("Second close failed: %v", err)
 	}
 }
+
+// TestBidiCopy tests bidirectional copy between connections
+func TestBidiCopy(t *testing.T) {
+	// Create two pipe pairs to simulate connections
+	client1, server1 := net.Pipe()
+	client2, server2 := net.Pipe()
+	defer client1.Close()
+	defer server1.Close()
+	defer client2.Close()
+	defer server2.Close()
+
+	// Write data from client1 and client2
+	go func() {
+		client1.Write([]byte("data from client1"))
+		client1.Close()
+	}()
+
+	go func() {
+		client2.Write([]byte("data from client2"))
+		client2.Close()
+	}()
+
+	// Run bidiCopy between server1 and server2
+	written, read, err := bidiCopy(server1, server2, 1024)
+	if err != nil {
+		t.Logf("bidiCopy error (expected): %v", err)
+	}
+
+	// Check that some data was transferred
+	t.Logf("Written: %d, Read: %d", written, read)
+}
+
+// TestProxyConnectionNotImplemented tests that ProxyConnection returns not implemented
+func TestProxyConnectionNotImplemented(t *testing.T) {
+	server := New(DefaultConfig(), nil)
+	proxy := NewTCPProxy(server, 0, 0)
+
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	tunnel := &Tunnel{ID: "test-tunnel"}
+	session := &Session{ID: "test-session"}
+
+	err := proxy.ProxyConnection(c1, tunnel, session)
+	if err == nil {
+		t.Error("Expected error from unimplemented ProxyConnection")
+	}
+	if err.Error() != "not implemented" {
+		t.Errorf("Expected 'not implemented' error, got: %v", err)
+	}
+}
+
+// TestTCPTunnelWithListener tests TCP tunnel with listener
+func TestTCPTunnelWithListener(t *testing.T) {
+	tunnel := NewTCPTunnel("tcp-1", "tun-123", 20001)
+
+	// Create a listener
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to create listener: %v", err)
+	}
+	tunnel.Listener = listener
+
+	// Close should close the listener
+	err = tunnel.Close()
+	if err != nil {
+		t.Errorf("Close failed: %v", err)
+	}
+}
+
+// TestBidiCopyWithLargeBuffer tests bidiCopy with larger buffer
+func TestBidiCopyWithLargeBuffer(t *testing.T) {
+	client1, server1 := net.Pipe()
+	client2, server2 := net.Pipe()
+	defer client1.Close()
+	defer server1.Close()
+	defer client2.Close()
+	defer server2.Close()
+
+	// Send larger data
+	data1 := make([]byte, 1000)
+	data2 := make([]byte, 1000)
+	for i := range data1 {
+		data1[i] = byte(i % 256)
+		data2[i] = byte((i + 128) % 256)
+	}
+
+	go func() {
+		client1.Write(data1)
+		client1.Close()
+	}()
+
+	go func() {
+		client2.Write(data2)
+		client2.Close()
+	}()
+
+	// Run with larger buffer
+	written, read, _ := bidiCopy(server1, server2, 4096)
+	t.Logf("Large buffer - Written: %d, Read: %d", written, read)
+}

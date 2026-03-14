@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"crypto/tls"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -326,4 +327,108 @@ func mustMakeRequestWithProto(method string, headers map[string]string, proto st
 		req.Header.Set(k, v)
 	}
 	return req
+}
+
+// TestSerializeRequestWithBody tests SerializeRequest with a request body
+func TestSerializeRequestWithBody(t *testing.T) {
+	body := strings.NewReader("request body content")
+	req, err := http.NewRequest("POST", "http://example.com/submit", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "10.0.0.1:5555"
+
+	data, err := SerializeRequest(req)
+	if err != nil {
+		t.Fatalf("SerializeRequest: %v", err)
+	}
+
+	if !bytes.Contains(data, []byte("POST")) {
+		t.Error("Missing method in serialized request")
+	}
+	if !bytes.Contains(data, []byte("request body content")) {
+		t.Error("Missing body in serialized request")
+	}
+	if !bytes.Contains(data, []byte("X-Forwarded-For: 10.0.0.1:5555")) {
+		t.Error("Missing X-Forwarded-For header")
+	}
+	if !bytes.Contains(data, []byte("X-Forwarded-Proto: http")) {
+		t.Error("Missing X-Forwarded-Proto header")
+	}
+}
+
+// TestSerializeRequestWithTLS tests SerializeRequest with TLS set
+func TestSerializeRequestWithTLS(t *testing.T) {
+	req, err := http.NewRequest("GET", "https://example.com/secure", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.RemoteAddr = "10.0.0.1:5555"
+	req.TLS = &tls.ConnectionState{} // Set TLS to non-nil
+
+	data, err := SerializeRequest(req)
+	if err != nil {
+		t.Fatalf("SerializeRequest: %v", err)
+	}
+
+	if !bytes.Contains(data, []byte("X-Forwarded-Proto: https")) {
+		t.Error("Expected X-Forwarded-Proto: https for TLS request")
+	}
+}
+
+// TestDeserializeResponseError tests DeserializeResponse with invalid data
+func TestDeserializeResponseError(t *testing.T) {
+	_, err := DeserializeResponse([]byte("this is not a valid HTTP response"))
+	if err == nil {
+		t.Error("Expected error for invalid response data")
+	}
+}
+
+// TestShouldCloseConnectionHTTP0 tests shouldCloseConnection with HTTP/0.x (ProtoMajor < 1)
+func TestShouldCloseConnectionHTTP0(t *testing.T) {
+	req, _ := http.NewRequest("GET", "http://example.com", nil)
+	req.ProtoMajor = 0
+	req.ProtoMinor = 9
+
+	result := shouldCloseConnection(req, nil)
+	if !result {
+		t.Error("shouldCloseConnection should return true for HTTP/0.x")
+	}
+}
+
+// errReader is an io.Reader that always returns an error
+type errReader struct{}
+
+func (e *errReader) Read(p []byte) (int, error) {
+	return 0, io.ErrUnexpectedEOF
+}
+
+// TestSerializeRequestWithErrorBody tests SerializeRequest when reading body fails
+func TestSerializeRequestWithErrorBody(t *testing.T) {
+	req, _ := http.NewRequest("POST", "http://example.com/submit", &errReader{})
+	req.RemoteAddr = "10.0.0.1:5555"
+
+	_, err := SerializeRequest(req)
+	if err == nil {
+		t.Error("Expected error when reading body fails")
+	}
+}
+
+// TestProxyRequestWriteError tests ProxyRequest when request serialization fails
+func TestProxyRequestWriteError(t *testing.T) {
+	srv := New(DefaultConfig(), nil)
+	proxy := NewHTTPProxy(srv, 30*time.Second)
+
+	rw := httptest.NewRecorder()
+	// Create a request with a body that errors on read, which causes r.Write to fail
+	req := httptest.NewRequest("POST", "http://example.com/test", &errReader{})
+
+	tunnel := &Tunnel{ID: "test-tunnel"}
+	session := &Session{ID: "test-session"}
+
+	err := proxy.ProxyRequest(rw, req, tunnel, session)
+	if err == nil {
+		t.Error("Expected error from ProxyRequest with failing body")
+	}
 }

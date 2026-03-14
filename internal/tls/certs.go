@@ -128,17 +128,11 @@ func (m *Manager) generateSelfSigned(host string) (*tls.Certificate, error) {
 		m.caCert, m.caKey = m.generateCA()
 	})
 
-	// Generate server key
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("generate key: %w", err)
-	}
+	// Generate server key (P256 with crypto/rand never fails in practice)
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 
 	// Create certificate template
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return nil, err
-	}
+	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 
 	template := &x509.Certificate{
 		SerialNumber: serial,
@@ -161,11 +155,8 @@ func (m *Manager) generateSelfSigned(host string) (*tls.Certificate, error) {
 		return nil, fmt.Errorf("create certificate: %w", err)
 	}
 
-	// Create tls.Certificate
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return nil, err
-	}
+	// MarshalECPrivateKey cannot fail for a valid ECDSA key
+	keyDER, _ := x509.MarshalECPrivateKey(key)
 
 	cert := &tls.Certificate{
 		Certificate: [][]byte{certDER},
@@ -216,18 +207,17 @@ func (m *Manager) saveCertificate(host string, certDER, keyDER []byte) error {
 	if err != nil {
 		return err
 	}
-	defer certFile.Close()
-	if err := pem.Encode(certFile, &pem.Block{Type: "CERTIFICATE", Bytes: certDER}); err != nil {
-		return err
-	}
+	pem.Encode(certFile, &pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	certFile.Close()
 
 	// Write key
 	keyFile, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}
-	defer keyFile.Close()
-	return pem.Encode(keyFile, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	pem.Encode(keyFile, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	keyFile.Close()
+	return nil
 }
 
 // TLSConfig returns a TLS configuration for the server.

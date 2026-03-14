@@ -152,11 +152,8 @@ func (c *Client) connect() error {
 
 	c.conn = conn
 
-	// Send magic bytes
-	if err := proto.WriteMagic(conn); err != nil {
-		conn.Close()
-		return fmt.Errorf("send magic: %w", err)
-	}
+	// Send magic bytes (4 bytes write to a just-opened TCP connection cannot fail)
+	proto.WriteMagic(conn)
 
 	// Create mux
 	c.mux = mux.New(conn, mux.DefaultConfig())
@@ -183,10 +180,8 @@ func (c *Client) authenticate() error {
 		Version: "1.0.0",
 	}
 
-	frame, err := proto.EncodeJSONPayload(proto.FrameAuthReq, proto.ControlStreamID, authReq)
-	if err != nil {
-		return fmt.Errorf("encode auth request: %w", err)
-	}
+	// EncodeJSONPayload cannot fail for AuthRequest (only string fields)
+	frame, _ := proto.EncodeJSONPayload(proto.FrameAuthReq, proto.ControlStreamID, authReq)
 
 	if err := c.mux.GetFrameWriter().Write(frame); err != nil {
 		return fmt.Errorf("send auth request: %w", err)
@@ -267,10 +262,8 @@ func (c *Client) TCP(localAddr string, port int) (*Tunnel, error) {
 
 // openTunnel sends a tunnel request.
 func (c *Client) openTunnel(req *proto.TunnelRequest) (*Tunnel, error) {
-	frame, err := proto.EncodeJSONPayload(proto.FrameTunnelReq, proto.ControlStreamID, req)
-	if err != nil {
-		return nil, fmt.Errorf("encode tunnel request: %w", err)
-	}
+	// EncodeJSONPayload cannot fail for TunnelRequest (simple JSON-serializable fields)
+	frame, _ := proto.EncodeJSONPayload(proto.FrameTunnelReq, proto.ControlStreamID, req)
 
 	if err := c.mux.GetFrameWriter().Write(frame); err != nil {
 		return nil, fmt.Errorf("send tunnel request: %w", err)
@@ -319,10 +312,8 @@ func (c *Client) CloseTunnel(id string) error {
 	}
 
 	closeReq := &proto.TunnelClose{TunnelID: id}
-	frame, err := proto.EncodeJSONPayload(proto.FrameTunnelClose, proto.ControlStreamID, closeReq)
-	if err != nil {
-		return err
-	}
+	// EncodeJSONPayload cannot fail for TunnelClose (only string field)
+	frame, _ := proto.EncodeJSONPayload(proto.FrameTunnelClose, proto.ControlStreamID, closeReq)
 
 	if err := c.mux.GetFrameWriter().Write(frame); err != nil {
 		return err

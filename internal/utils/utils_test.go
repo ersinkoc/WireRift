@@ -145,6 +145,16 @@ func TestExtractSubdomain(t *testing.T) {
 	}
 }
 
+// TestExtractSubdomainSuffixMismatch tests ExtractSubdomain where host is longer than suffix but doesn't match
+func TestExtractSubdomainSuffixMismatch(t *testing.T) {
+	// Host "xxxx.other.example.com" is longer than suffix ".wirerift.dev" but doesn't end with it
+	// This triggers the HasSuffix check on line 58
+	result := ExtractSubdomain("xxxx.other.example.com", "wirerift.dev")
+	if result != "" {
+		t.Errorf("ExtractSubdomain(\"xxxx.other.example.com\", \"wirerift.dev\") = %q, want empty", result)
+	}
+}
+
 func TestIsValidSubdomain(t *testing.T) {
 	validTests := []string{
 		"app",

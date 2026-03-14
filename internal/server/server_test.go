@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wirerift/wirerift/internal/mux"
 	"github.com/wirerift/wirerift/internal/proto"
 )
 
@@ -784,5 +785,234 @@ func TestStartStopWithHTTP(t *testing.T) {
 	// Stop
 	if err := s.Stop(); err != nil {
 		t.Errorf("Stop failed: %v", err)
+	}
+}
+
+// TestStartControlListenerError tests Start when control listener fails
+func TestStartControlListenerError(t *testing.T) {
+	serverCfg := DefaultConfig()
+	serverCfg.ControlAddr = "invalid-addr-no-port"
+	serverCfg.HTTPAddr = "127.0.0.1:0"
+
+	s := New(serverCfg, nil)
+
+	err := s.Start()
+	if err == nil {
+		s.Stop()
+		t.Fatal("Expected error from invalid control address")
+	}
+	if !strings.Contains(err.Error(), "start control listener") {
+		t.Errorf("Expected 'start control listener' in error, got: %v", err)
+	}
+}
+
+// TestStartHTTPListenerError tests Start when HTTP listener fails
+func TestStartHTTPListenerError(t *testing.T) {
+	// First, bind a port so it's occupied
+	blocker, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to create blocker listener: %v", err)
+	}
+	defer blocker.Close()
+	blockedAddr := blocker.Addr().String()
+
+	serverCfg := DefaultConfig()
+	serverCfg.ControlAddr = "127.0.0.1:0"
+	serverCfg.HTTPAddr = blockedAddr // Already in use
+
+	s := New(serverCfg, nil)
+
+	err = s.Start()
+	if err == nil {
+		s.Stop()
+		t.Fatal("Expected error from occupied HTTP address")
+	}
+	if !strings.Contains(err.Error(), "start HTTP listener") {
+		t.Errorf("Expected 'start HTTP listener' in error, got: %v", err)
+	}
+	// Clean up the control listener that was successfully started
+	if s.controlListener != nil {
+		s.controlListener.Close()
+	}
+}
+
+// TestForwardHTTPRequest tests the forwardHTTPRequest stub
+func TestForwardHTTPRequest(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	tunnel := &Tunnel{
+		ID:        "tunnel-1",
+		Type:      proto.TunnelTypeHTTP,
+		Subdomain: "test",
+		SessionID: "session-1",
+	}
+
+	session := &Session{
+		ID:        "session-1",
+		AccountID: "account-1",
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "http://test.wirerift.dev/", nil)
+
+	s.forwardHTTPRequest(rr, req, session, tunnel)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected status 503, got %d", rr.Code)
+	}
+	if body := rr.Body.String(); !strings.Contains(body, "Not implemented") {
+		t.Errorf("Expected 'Not implemented' in body, got: %s", body)
+	}
+}
+
+// TestStopWithSessions tests Stop when sessions with Mux exist
+func TestStopWithSessions(t *testing.T) {
+	serverCfg := DefaultConfig()
+	serverCfg.ControlAddr = "127.0.0.1:0"
+	serverCfg.HTTPAddr = "127.0.0.1:0"
+
+	s := New(serverCfg, nil)
+
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Create a pipe to provide a connection for Mux
+	c1, c2 := net.Pipe()
+	defer c2.Close()
+
+	m := mux.New(c1, mux.DefaultConfig())
+
+	session := &Session{
+		ID:         "session-with-mux",
+		AccountID:  "account-1",
+		Mux:        m,
+		Tunnels:    make(map[string]*Tunnel),
+		CreatedAt:  time.Now(),
+		LastSeen:   time.Now(),
+		RemoteAddr: c1.RemoteAddr(),
+	}
+	s.sessions.Store("session-with-mux", session)
+
+	// Stop should close the session's mux without panic
+	if err := s.Stop(); err != nil {
+		t.Errorf("Stop failed: %v", err)
+	}
+}
+
+// TestHandleHTTPRequestWithSessionFound tests the full flow with tunnel AND session found
+func TestHandleHTTPRequestWithSessionFound(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	// Create a pipe for the mux
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	m := mux.New(c1, mux.DefaultConfig())
+
+	// Store both tunnel and session
+	tunnel := &Tunnel{
+		ID:        "tunnel-1",
+		Type:      proto.TunnelTypeHTTP,
+		Subdomain: "fulltest",
+		SessionID: "session-full",
+	}
+	s.tunnels.Store("fulltest", tunnel)
+
+	session := &Session{
+		ID:         "session-full",
+		AccountID:  "account-1",
+		Mux:        m,
+		Tunnels:    map[string]*Tunnel{"tunnel-1": tunnel},
+		CreatedAt:  time.Now(),
+		LastSeen:   time.Now(),
+		RemoteAddr: c1.RemoteAddr(),
+	}
+	s.sessions.Store("session-full", session)
+
+	// Make HTTP request
+	req := httptest.NewRequest("GET", "http://fulltest.wirerift.dev/path", nil)
+	req.Host = "fulltest.wirerift.dev"
+	rr := httptest.NewRecorder()
+
+	s.handleHTTPRequest(rr, req)
+
+	// Should reach forwardHTTPRequest and get 503 Not implemented
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected status 503, got %d", rr.Code)
+	}
+}
+
+// TestAcceptControlConnectionsErrorThenDone tests accept error followed by context cancellation
+func TestAcceptControlConnectionsErrorThenDone(t *testing.T) {
+	serverCfg := DefaultConfig()
+	serverCfg.ControlAddr = "127.0.0.1:0"
+
+	s := New(serverCfg, nil)
+
+	// Start the control listener
+	if err := s.startControlListener(); err != nil {
+		t.Fatalf("startControlListener failed: %v", err)
+	}
+
+	// Cancel context first, then close listener to trigger accept error with ctx done
+	s.cancel()
+
+	// Close the listener to trigger accept error
+	s.controlListener.Close()
+
+	// Wait for goroutine to finish
+	s.wg.Wait()
+}
+
+// TestStopWithHTTPSListener tests Stop when httpsListener is set
+func TestStopWithHTTPSListener(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	// Manually set up an httpsListener
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to create listener: %v", err)
+	}
+	s.httpsListener = listener
+
+	if err := s.Stop(); err != nil {
+		t.Errorf("Stop failed: %v", err)
+	}
+}
+
+// TestHandleControlConnectionCtxDone tests handleControlConnection exiting via ctx.Done
+func TestHandleControlConnectionCtxDone(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	// Create a pipe
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+
+	// Write magic from client side first
+	go func() {
+		proto.WriteMagic(clientConn)
+	}()
+
+	// Run handleControlConnection in a goroutine
+	done := make(chan struct{})
+	go func() {
+		s.handleControlConnection(serverConn)
+		close(done)
+	}()
+
+	// Give time for magic to be read and mux to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Cancel context to trigger ctx.Done() path
+	s.cancel()
+
+	// Wait for handleControlConnection to return
+	select {
+	case <-done:
+		// Success
+	case <-time.After(2 * time.Second):
+		t.Error("handleControlConnection did not exit after context cancellation")
 	}
 }

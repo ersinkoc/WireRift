@@ -1,0 +1,515 @@
+
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+		<title>proto: Go Coverage Report</title>
+		<style>
+			body {
+				background: black;
+				color: rgb(80, 80, 80);
+			}
+			body, pre, #legend span {
+				font-family: Menlo, monospace;
+				font-weight: bold;
+			}
+			#topbar {
+				background: black;
+				position: fixed;
+				top: 0; left: 0; right: 0;
+				height: 42px;
+				border-bottom: 1px solid rgb(80, 80, 80);
+			}
+			#content {
+				margin-top: 50px;
+			}
+			#nav, #legend {
+				float: left;
+				margin-left: 10px;
+			}
+			#legend {
+				margin-top: 12px;
+			}
+			#nav {
+				margin-top: 10px;
+			}
+			#legend span {
+				margin: 0 5px;
+			}
+			.cov0 { color: rgb(192, 0, 0) }
+.cov1 { color: rgb(128, 128, 128) }
+.cov2 { color: rgb(116, 140, 131) }
+.cov3 { color: rgb(104, 152, 134) }
+.cov4 { color: rgb(92, 164, 137) }
+.cov5 { color: rgb(80, 176, 140) }
+.cov6 { color: rgb(68, 188, 143) }
+.cov7 { color: rgb(56, 200, 146) }
+.cov8 { color: rgb(44, 212, 149) }
+.cov9 { color: rgb(32, 224, 152) }
+.cov10 { color: rgb(20, 236, 155) }
+
+		</style>
+	</head>
+	<body>
+		<div id="topbar">
+			<div id="nav">
+				<select id="files">
+				
+				<option value="file0">github.com/wirerift/wirerift/internal/proto/constants.go (100.0%)</option>
+				
+				<option value="file1">github.com/wirerift/wirerift/internal/proto/frame.go (98.2%)</option>
+				
+				<option value="file2">github.com/wirerift/wirerift/internal/proto/messages.go (100.0%)</option>
+				
+				</select>
+			</div>
+			<div id="legend">
+				<span>not tracked</span>
+			
+				<span class="cov0">not covered</span>
+				<span class="cov8">covered</span>
+			
+			</div>
+		</div>
+		<div id="content">
+		
+		<pre class="file" id="file0" style="display: none">package proto
+
+// Magic bytes for protocol identification.
+// Sent by client immediately upon connection: "WRF" + version byte.
+var Magic = []byte{0x57, 0x52, 0x46, 0x01} // "WRF\x01"
+
+// Protocol constants.
+const (
+        // Version is the current protocol version.
+        Version byte = 0x01
+
+        // HeaderSize is the size of the frame header in bytes.
+        HeaderSize = 9
+
+        // MaxPayloadSize is the maximum payload size (16 MB).
+        MaxPayloadSize = 16 &lt;&lt; 20 // 16,777,216 bytes
+
+        // MaxStreamID is the maximum stream ID (3 bytes, big-endian).
+        MaxStreamID = 1&lt;&lt;24 - 1 // 16,777,215
+
+        // ControlStreamID is the stream ID for control messages.
+        ControlStreamID = 0
+
+        // DefaultWindowSize is the default flow control window size (256 KB).
+        DefaultWindowSize = 256 &lt;&lt; 10 // 262,144 bytes
+)
+
+// FrameType represents the type of a frame.
+type FrameType byte
+
+// Frame type constants.
+const (
+        // Control frames (0x01-0x0F)
+        FrameAuthReq     FrameType = 0x01 // Authentication request (C→S)
+        FrameAuthRes     FrameType = 0x02 // Authentication response (S→C)
+        FrameTunnelReq   FrameType = 0x03 // Tunnel open request (C→S)
+        FrameTunnelRes   FrameType = 0x04 // Tunnel open response (S→C)
+        FrameTunnelClose FrameType = 0x05 // Tunnel close (both)
+
+        // Stream frames (0x10-0x1F)
+        FrameStreamOpen   FrameType = 0x10 // New stream opened (S→C)
+        FrameStreamData   FrameType = 0x11 // Stream data (both)
+        FrameStreamClose  FrameType = 0x12 // Stream closed (both)
+        FrameStreamRst    FrameType = 0x13 // Stream reset (both)
+        FrameStreamWindow FrameType = 0x14 // Window update (both)
+
+        // Heartbeat frames (0x20-0x2F)
+        FrameHeartbeat    FrameType = 0x20 // Heartbeat ping (both)
+        FrameHeartbeatAck FrameType = 0x21 // Heartbeat pong (both)
+
+        // Error frames (0xF0-0xFF)
+        FrameGoAway FrameType = 0xFE // Graceful shutdown (both)
+        FrameError  FrameType = 0xFF // Protocol error (both)
+)
+
+// String returns a human-readable name for the frame type.
+func (ft FrameType) String() string <span class="cov8" title="1">{
+        switch ft </span>{
+        case FrameAuthReq:<span class="cov8" title="1">
+                return "AUTH_REQ"</span>
+        case FrameAuthRes:<span class="cov8" title="1">
+                return "AUTH_RES"</span>
+        case FrameTunnelReq:<span class="cov8" title="1">
+                return "TUNNEL_REQ"</span>
+        case FrameTunnelRes:<span class="cov8" title="1">
+                return "TUNNEL_RES"</span>
+        case FrameTunnelClose:<span class="cov8" title="1">
+                return "TUNNEL_CLOSE"</span>
+        case FrameStreamOpen:<span class="cov8" title="1">
+                return "STREAM_OPEN"</span>
+        case FrameStreamData:<span class="cov8" title="1">
+                return "STREAM_DATA"</span>
+        case FrameStreamClose:<span class="cov8" title="1">
+                return "STREAM_CLOSE"</span>
+        case FrameStreamRst:<span class="cov8" title="1">
+                return "STREAM_RST"</span>
+        case FrameStreamWindow:<span class="cov8" title="1">
+                return "STREAM_WINDOW"</span>
+        case FrameHeartbeat:<span class="cov8" title="1">
+                return "HEARTBEAT"</span>
+        case FrameHeartbeatAck:<span class="cov8" title="1">
+                return "HEARTBEAT_ACK"</span>
+        case FrameGoAway:<span class="cov8" title="1">
+                return "GO_AWAY"</span>
+        case FrameError:<span class="cov8" title="1">
+                return "ERROR"</span>
+        default:<span class="cov8" title="1">
+                return "UNKNOWN"</span>
+        }
+}
+</pre>
+		
+		<pre class="file" id="file1" style="display: none">package proto
+
+import (
+        "encoding/binary"
+        "errors"
+        "io"
+        "sync"
+)
+
+// Errors returned by the proto package.
+var (
+        ErrInvalidVersion   = errors.New("invalid protocol version")
+        ErrInvalidFrameType = errors.New("invalid frame type")
+        ErrInvalidStreamID  = errors.New("invalid stream ID")
+        ErrPayloadTooLarge  = errors.New("payload exceeds maximum size")
+        ErrHeaderTooShort   = errors.New("frame header too short")
+        ErrInvalidMagic     = errors.New("invalid magic bytes")
+)
+
+// Frame represents a single protocol frame.
+type Frame struct {
+        Version  byte       // Protocol version (currently 0x01)
+        Type     FrameType  // Frame type
+        StreamID uint32     // Stream identifier (0 = control stream)
+        Payload  []byte     // Frame payload (0 to 16 MB)
+}
+
+// headerPool is a pool for reusing header buffers.
+var headerPool = sync.Pool{
+        New: func() any <span class="cov8" title="1">{
+                return make([]byte, HeaderSize)
+        }</span>,
+}
+
+// Encode writes the frame to the provided writer.
+func (f *Frame) Encode(w io.Writer) error <span class="cov8" title="1">{
+        // Validate frame
+        if f.Version != Version </span><span class="cov8" title="1">{
+                return ErrInvalidVersion
+        }</span>
+        <span class="cov8" title="1">if f.StreamID &gt; MaxStreamID </span><span class="cov8" title="1">{
+                return ErrInvalidStreamID
+        }</span>
+        <span class="cov8" title="1">if len(f.Payload) &gt; MaxPayloadSize </span><span class="cov8" title="1">{
+                return ErrPayloadTooLarge
+        }</span>
+
+        // Get header buffer from pool
+        <span class="cov8" title="1">header := headerPool.Get().([]byte)
+        defer headerPool.Put(header)
+
+        // Encode header
+        header[0] = f.Version
+        header[1] = byte(f.Type)
+        header[2] = byte(f.StreamID &gt;&gt; 16) // Stream ID high byte
+        header[3] = byte(f.StreamID &gt;&gt; 8)  // Stream ID mid byte
+        header[4] = byte(f.StreamID)       // Stream ID low byte
+        binary.BigEndian.PutUint32(header[5:9], uint32(len(f.Payload)))
+
+        // Write header
+        if _, err := w.Write(header); err != nil </span><span class="cov8" title="1">{
+                return err
+        }</span>
+
+        // Write payload (if any)
+        <span class="cov8" title="1">if len(f.Payload) &gt; 0 </span><span class="cov8" title="1">{
+                if _, err := w.Write(f.Payload); err != nil </span><span class="cov8" title="1">{
+                        return err
+                }</span>
+        }
+
+        <span class="cov8" title="1">return nil</span>
+}
+
+// ReadFrame reads a frame from the provided reader.
+func ReadFrame(r io.Reader) (*Frame, error) <span class="cov8" title="1">{
+        // Get header buffer from pool
+        header := headerPool.Get().([]byte)
+        defer headerPool.Put(header)
+
+        // Read header
+        if _, err := io.ReadFull(r, header); err != nil </span><span class="cov8" title="1">{
+                return nil, err
+        }</span>
+
+        // Parse header
+        <span class="cov8" title="1">version := header[0]
+        if version != Version </span><span class="cov8" title="1">{
+                return nil, ErrInvalidVersion
+        }</span>
+
+        <span class="cov8" title="1">frameType := FrameType(header[1])
+
+        streamID := uint32(header[2])&lt;&lt;16 | uint32(header[3])&lt;&lt;8 | uint32(header[4])
+        if streamID &gt; MaxStreamID </span><span class="cov0" title="0">{
+                return nil, ErrInvalidStreamID
+        }</span>
+
+        <span class="cov8" title="1">payloadLen := binary.BigEndian.Uint32(header[5:9])
+        if payloadLen &gt; MaxPayloadSize </span><span class="cov8" title="1">{
+                return nil, ErrPayloadTooLarge
+        }</span>
+
+        // Read payload
+        <span class="cov8" title="1">var payload []byte
+        if payloadLen &gt; 0 </span><span class="cov8" title="1">{
+                payload = make([]byte, payloadLen)
+                if _, err := io.ReadFull(r, payload); err != nil </span><span class="cov8" title="1">{
+                        return nil, err
+                }</span>
+        }
+
+        <span class="cov8" title="1">return &amp;Frame{
+                Version:  version,
+                Type:     frameType,
+                StreamID: streamID,
+                Payload:  payload,
+        }, nil</span>
+}
+
+// FrameReader wraps an io.Reader for reading frames.
+type FrameReader struct {
+        r io.Reader
+}
+
+// NewFrameReader creates a new FrameReader.
+func NewFrameReader(r io.Reader) *FrameReader <span class="cov8" title="1">{
+        return &amp;FrameReader{r: r}
+}</span>
+
+// Read reads and returns the next frame.
+func (fr *FrameReader) Read() (*Frame, error) <span class="cov8" title="1">{
+        return ReadFrame(fr.r)
+}</span>
+
+// FrameWriter wraps an io.Writer for writing frames with thread safety.
+type FrameWriter struct {
+        mu sync.Mutex
+        w  io.Writer
+}
+
+// NewFrameWriter creates a new FrameWriter.
+func NewFrameWriter(w io.Writer) *FrameWriter <span class="cov8" title="1">{
+        return &amp;FrameWriter{w: w}
+}</span>
+
+// Write writes a frame to the underlying writer. Thread-safe.
+func (fw *FrameWriter) Write(f *Frame) error <span class="cov8" title="1">{
+        fw.mu.Lock()
+        defer fw.mu.Unlock()
+        return f.Encode(fw.w)
+}</span>
+
+// WriteMagic writes the magic bytes to identify the protocol.
+func WriteMagic(w io.Writer) error <span class="cov8" title="1">{
+        _, err := w.Write(Magic)
+        return err
+}</span>
+
+// ReadMagic reads and validates magic bytes.
+func ReadMagic(r io.Reader) error <span class="cov8" title="1">{
+        buf := make([]byte, len(Magic))
+        if _, err := io.ReadFull(r, buf); err != nil </span><span class="cov8" title="1">{
+                return err
+        }</span>
+        <span class="cov8" title="1">for i, b := range buf </span><span class="cov8" title="1">{
+                if b != Magic[i] </span><span class="cov8" title="1">{
+                        return ErrInvalidMagic
+                }</span>
+        }
+        <span class="cov8" title="1">return nil</span>
+}
+</pre>
+		
+		<pre class="file" id="file2" style="display: none">package proto
+
+import (
+        "encoding/json"
+        "time"
+)
+
+// AuthRequest is sent by the client to authenticate.
+type AuthRequest struct {
+        Token    string `json:"token"`
+        ClientID string `json:"client_id,omitempty"`
+        Version  string `json:"version,omitempty"`
+        OS       string `json:"os,omitempty"`
+        Arch     string `json:"arch,omitempty"`
+        Hostname string `json:"hostname,omitempty"`
+}
+
+// AuthResponse is sent by the server after authentication.
+type AuthResponse struct {
+        OK                 bool   `json:"ok"`
+        SessionID          string `json:"session_id,omitempty"`
+        ServerVersion      string `json:"server_version,omitempty"`
+        HeartbeatInterval  int    `json:"heartbeat_interval_ms,omitempty"`
+        MaxTunnels         int    `json:"max_tunnels,omitempty"`
+        MaxStreamsPerTunnel int   `json:"max_streams_per_tunnel,omitempty"`
+        Error              string `json:"error,omitempty"`
+}
+
+// TunnelType represents the type of tunnel.
+type TunnelType string
+
+const (
+        TunnelTypeHTTP TunnelType = "http"
+        TunnelTypeTCP  TunnelType = "tcp"
+)
+
+// TunnelAuth represents authentication for a tunnel.
+type TunnelAuth struct {
+        Type     string `json:"type,omitempty"`
+        Username string `json:"username,omitempty"`
+        Password string `json:"password,omitempty"`
+}
+
+// TunnelRequest is sent by the client to open a tunnel.
+type TunnelRequest struct {
+        Type       TunnelType       `json:"type"`
+        Subdomain  string           `json:"subdomain,omitempty"`
+        RemotePort int              `json:"remote_port,omitempty"`
+        LocalAddr  string           `json:"local_addr"`
+        Inspect    bool             `json:"inspect,omitempty"`
+        Auth       *TunnelAuth      `json:"auth,omitempty"`
+        Headers    map[string]string `json:"headers,omitempty"`
+}
+
+// TunnelMetadata contains tunnel-specific metadata.
+type TunnelMetadata struct {
+        RemotePort int    `json:"remote_port,omitempty"`
+        Subdomain  string `json:"subdomain,omitempty"`
+}
+
+// TunnelResponse is sent by the server after tunnel allocation.
+type TunnelResponse struct {
+        OK        bool           `json:"ok"`
+        TunnelID  string         `json:"tunnel_id,omitempty"`
+        Type      TunnelType     `json:"type,omitempty"`
+        PublicURL string         `json:"public_url,omitempty"`
+        Metadata  *TunnelMetadata `json:"metadata,omitempty"`
+        Error     string         `json:"error,omitempty"`
+}
+
+// TunnelClose is sent to close a tunnel.
+type TunnelClose struct {
+        TunnelID string `json:"tunnel_id"`
+}
+
+// StreamOpen is sent by the server when a new connection arrives.
+type StreamOpen struct {
+        TunnelID   string `json:"tunnel_id"`
+        StreamID   uint32 `json:"stream_id"`
+        RemoteAddr string `json:"remote_addr"`
+        Protocol   string `json:"protocol"`
+}
+
+// StreamWindow is sent to update flow control window.
+type StreamWindow struct {
+        StreamID uint32 `json:"stream_id"`
+        Delta    uint32 `json:"delta"`
+}
+
+// GoAway is sent to signal graceful shutdown.
+type GoAway struct {
+        Reason          string `json:"reason"`
+        Message         string `json:"message,omitempty"`
+        ReconnectAfter  int    `json:"reconnect_after_ms,omitempty"`
+}
+
+// ErrorFrame represents a protocol-level error.
+type ErrorFrame struct {
+        Code    int    `json:"code"`
+        Message string `json:"message"`
+}
+
+// HeartbeatPayload creates a heartbeat payload with current timestamp.
+func HeartbeatPayload() []byte <span class="cov8" title="1">{
+        buf := make([]byte, 8)
+        ts := uint64(time.Now().UnixNano())
+        for i := 0; i &lt; 8; i++ </span><span class="cov8" title="1">{
+                buf[i] = byte(ts &gt;&gt; (56 - i*8))
+        }</span>
+        <span class="cov8" title="1">return buf</span>
+}
+
+// ParseHeartbeat extracts timestamp from heartbeat payload.
+func ParseHeartbeat(payload []byte) time.Time <span class="cov8" title="1">{
+        if len(payload) &lt; 8 </span><span class="cov8" title="1">{
+                return time.Time{}
+        }</span>
+        <span class="cov8" title="1">ts := uint64(0)
+        for i := 0; i &lt; 8; i++ </span><span class="cov8" title="1">{
+                ts = (ts &lt;&lt; 8) | uint64(payload[i])
+        }</span>
+        <span class="cov8" title="1">return time.Unix(0, int64(ts))</span>
+}
+
+// EncodeJSONPayload creates a frame with JSON-encoded payload.
+func EncodeJSONPayload(frameType FrameType, streamID uint32, v any) (*Frame, error) <span class="cov8" title="1">{
+        payload, err := json.Marshal(v)
+        if err != nil </span><span class="cov8" title="1">{
+                return nil, err
+        }</span>
+        <span class="cov8" title="1">return &amp;Frame{
+                Version:  Version,
+                Type:     frameType,
+                StreamID: streamID,
+                Payload:  payload,
+        }, nil</span>
+}
+
+// DecodeJSONPayload decodes JSON payload into v.
+func DecodeJSONPayload(f *Frame, v any) error <span class="cov8" title="1">{
+        return json.Unmarshal(f.Payload, v)
+}</span>
+</pre>
+		
+		</div>
+	</body>
+	<script>
+	(function() {
+		var files = document.getElementById('files');
+		var visible;
+		files.addEventListener('change', onChange, false);
+		function select(part) {
+			if (visible)
+				visible.style.display = 'none';
+			visible = document.getElementById(part);
+			if (!visible)
+				return;
+			files.value = part;
+			visible.style.display = 'block';
+			location.hash = part;
+		}
+		function onChange() {
+			select(files.value);
+			window.scrollTo(0, 0);
+		}
+		if (location.hash != "") {
+			select(location.hash.substr(1));
+		}
+		if (!visible) {
+			select("file0");
+		}
+	})();
+	</script>
+</html>

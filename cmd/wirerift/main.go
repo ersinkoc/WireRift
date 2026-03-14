@@ -26,23 +26,30 @@ var (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		printUsage()
+	if err := run(os.Args); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
+}
 
-	cmd := os.Args[1]
+func run(args []string) error {
+	if len(args) < 2 {
+		printUsage()
+		return fmt.Errorf("")
+	}
+
+	cmd := args[1]
 	switch cmd {
 	case "http":
-		runHTTP()
+		return doHTTP(context.Background(), args)
 	case "tcp":
-		runTCP()
+		return doTCP(context.Background(), args)
 	case "start":
-		runStart()
+		return doStart(context.Background(), args)
 	case "list":
-		runList()
+		return doList(args)
 	case "config":
-		runConfig()
+		return doConfig(args)
 	case "version":
 		fmt.Printf("WireRift %s (commit: %s, built: %s)\n", version, commit, date)
 	case "help", "-h", "--help":
@@ -50,8 +57,9 @@ func main() {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", cmd)
 		printUsage()
-		os.Exit(1)
+		return fmt.Errorf("")
 	}
+	return nil
 }
 
 func printUsage() {
@@ -100,6 +108,14 @@ func getEnv(key, defaultVal string) string {
 	return defaultVal
 }
 
+// handleSignals cancels the context on interrupt/SIGTERM.
+func handleSignals(cancel context.CancelFunc) {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	<-sigCh
+	cancel()
+}
+
 func createLogger(verbose bool) *slog.Logger {
 	level := slog.LevelWarn
 	if verbose {
@@ -108,9 +124,9 @@ func createLogger(verbose bool) *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 }
 
-// runHTTP creates an HTTP tunnel
-func runHTTP() {
-	fs := flag.NewFlagSet("http", flag.ExitOnError)
+// doHTTP creates an HTTP tunnel.
+func doHTTP(parentCtx context.Context, args []string) error {
+	fs := flag.NewFlagSet("http", flag.ContinueOnError)
 	server := fs.String("server", "", "Server address (default: localhost:4443)")
 	token := fs.String("token", "", "Authentication token")
 	subdomain := fs.String("subdomain", "", "Requested subdomain")
@@ -127,7 +143,9 @@ func runHTTP() {
 		fmt.Fprintf(os.Stderr, "  wirerift http -subdomain myapp 8080\n")
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := fs.Parse(args[2:]); err != nil {
+		return err
+	}
 
 	opts := parseCommonOptions()
 	if *server != "" {
@@ -137,50 +155,41 @@ func runHTTP() {
 		opts.token = *token
 	}
 
-	args := fs.Args()
-	if len(args) < 1 {
+	fargs := fs.Args()
+	if len(fargs) < 1 {
 		fs.Usage()
-		os.Exit(1)
+		return fmt.Errorf("missing port argument")
 	}
 
-	localPort, err := strconv.Atoi(args[0])
+	localPort, err := strconv.Atoi(fargs[0])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Invalid port: %s\n", args[0])
-		os.Exit(1)
+		return fmt.Errorf("Invalid port: %s", fargs[0])
 	}
 
 	// Subdomain from positional arg or flag
 	reqSubdomain := *subdomain
-	if len(args) > 1 && reqSubdomain == "" {
-		reqSubdomain = args[1]
+	if len(fargs) > 1 && reqSubdomain == "" {
+		reqSubdomain = fargs[1]
 	}
 
 	logger := createLogger(*verbose)
 
 	// Create client
-	c := client.New(client.Config{
-		ServerAddr: opts.server,
-		Token:      opts.token,
-	}, logger)
+	clientCfg := client.DefaultConfig()
+	clientCfg.ServerAddr = opts.server
+	clientCfg.Token = opts.token
+	clientCfg.Reconnect = false
+	c := client.New(clientCfg, logger)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 
-	// Handle signals
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		if *verbose {
-			fmt.Println("\nShutting down...")
-		}
-		cancel()
-	}()
+	// Signal handling: cancel context on interrupt
+	go handleSignals(cancel)
 
 	// Connect to server
 	if err := c.Connect(); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to connect: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("Failed to connect: %v", err)
 	}
 
 	// Create tunnel
@@ -191,8 +200,7 @@ func runHTTP() {
 
 	tunnel, err := c.HTTP(fmt.Sprintf("localhost:%d", localPort), tunnelOpts...)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create tunnel: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("Failed to create tunnel: %v", err)
 	}
 
 	fmt.Printf("HTTP tunnel created: %s -> http://localhost:%d\n", tunnel.PublicURL, localPort)
@@ -200,18 +208,15 @@ func runHTTP() {
 		fmt.Printf("Subdomain: %s\n", tunnel.Subdomain)
 	}
 
-	if *verbose {
-		fmt.Println("Press Ctrl+C to stop")
-	}
-
 	// Wait for context
 	<-ctx.Done()
 	c.Close()
+	return nil
 }
 
-// runTCP creates a TCP tunnel
-func runTCP() {
-	fs := flag.NewFlagSet("tcp", flag.ExitOnError)
+// doTCP creates a TCP tunnel.
+func doTCP(parentCtx context.Context, args []string) error {
+	fs := flag.NewFlagSet("tcp", flag.ContinueOnError)
 	server := fs.String("server", "", "Server address (default: localhost:4443)")
 	token := fs.String("token", "", "Authentication token")
 	verbose := fs.Bool("v", false, "Verbose output")
@@ -226,7 +231,9 @@ func runTCP() {
 		fmt.Fprintf(os.Stderr, "  wirerift tcp 22\n")
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := fs.Parse(args[2:]); err != nil {
+		return err
+	}
 
 	opts := parseCommonOptions()
 	if *server != "" {
@@ -236,67 +243,54 @@ func runTCP() {
 		opts.token = *token
 	}
 
-	args := fs.Args()
-	if len(args) < 1 {
+	fargs := fs.Args()
+	if len(fargs) < 1 {
 		fs.Usage()
-		os.Exit(1)
+		return fmt.Errorf("missing port argument")
 	}
 
-	localPort, err := strconv.Atoi(args[0])
+	localPort, err := strconv.Atoi(fargs[0])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Invalid port: %s\n", args[0])
-		os.Exit(1)
+		return fmt.Errorf("Invalid port: %s", fargs[0])
 	}
 
 	logger := createLogger(*verbose)
 
 	// Create client
-	c := client.New(client.Config{
-		ServerAddr: opts.server,
-		Token:      opts.token,
-	}, logger)
+	clientCfg := client.DefaultConfig()
+	clientCfg.ServerAddr = opts.server
+	clientCfg.Token = opts.token
+	clientCfg.Reconnect = false
+	c := client.New(clientCfg, logger)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 
-	// Handle signals
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		if *verbose {
-			fmt.Println("\nShutting down...")
-		}
-		cancel()
-	}()
+	// Signal handling: cancel context on interrupt
+	go handleSignals(cancel)
 
 	// Connect to server
 	if err := c.Connect(); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to connect: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("Failed to connect: %v", err)
 	}
 
 	// Create tunnel
 	tunnel, err := c.TCP(fmt.Sprintf("localhost:%d", localPort), 0)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create tunnel: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("Failed to create tunnel: %v", err)
 	}
 
 	fmt.Printf("TCP tunnel created: %s:%d -> localhost:%d\n", opts.server, tunnel.Port, localPort)
 
-	if *verbose {
-		fmt.Println("Press Ctrl+C to stop")
-	}
-
 	// Wait for context
 	<-ctx.Done()
 	c.Close()
+	return nil
 }
 
-// runStart starts tunnels from a config file
-func runStart() {
-	fs := flag.NewFlagSet("start", flag.ExitOnError)
+// doStart starts tunnels from a config file.
+func doStart(parentCtx context.Context, args []string) error {
+	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	verbose := fs.Bool("v", false, "Verbose output")
 
 	fs.Usage = func() {
@@ -307,7 +301,9 @@ func runStart() {
 		fmt.Fprintf(os.Stderr, "\nDefault config file: wirerift.yaml\n")
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := fs.Parse(args[2:]); err != nil {
+		return err
+	}
 
 	configFile := "wirerift.yaml"
 	if len(fs.Args()) > 0 {
@@ -316,8 +312,7 @@ func runStart() {
 
 	cfg, err := loadConfig(configFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("Failed to load config: %v", err)
 	}
 
 	if *verbose {
@@ -328,27 +323,21 @@ func runStart() {
 
 	logger := createLogger(*verbose)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 
-	// Handle signals
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		fmt.Println("\nShutting down...")
-		cancel()
-	}()
+	// Signal handling: cancel context on interrupt
+	go handleSignals(cancel)
 
-	c := client.New(client.Config{
-		ServerAddr: cfg.Server,
-		Token:      cfg.Token,
-	}, logger)
+	startCfg := client.DefaultConfig()
+	startCfg.ServerAddr = cfg.Server
+	startCfg.Token = cfg.Token
+	startCfg.Reconnect = false
+	c := client.New(startCfg, logger)
 
 	// Connect to server
 	if err := c.Connect(); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to connect: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("Failed to connect: %v", err)
 	}
 
 	for _, t := range cfg.Tunnels {
@@ -380,6 +369,7 @@ func runStart() {
 
 	<-ctx.Done()
 	c.Close()
+	return nil
 }
 
 // TunnelConfig represents a tunnel in the config file
@@ -459,9 +449,9 @@ func loadConfig(path string) (*ConfigFile, error) {
 	return cfg, nil
 }
 
-// runList lists active tunnels
-func runList() {
-	fs := flag.NewFlagSet("list", flag.ExitOnError)
+// doList lists active tunnels.
+func doList(args []string) error {
+	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	server := fs.String("server", "", "Server address (default: localhost:4443)")
 	token := fs.String("token", "", "Authentication token")
 	jsonOutput := fs.Bool("json", false, "JSON output")
@@ -473,7 +463,9 @@ func runList() {
 		fs.PrintDefaults()
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := fs.Parse(args[2:]); err != nil {
+		return err
+	}
 
 	opts := parseCommonOptions()
 	if *server != "" {
@@ -493,8 +485,7 @@ func runList() {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to connect to server: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("Failed to connect to server: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -502,7 +493,7 @@ func runList() {
 
 	if *jsonOutput {
 		fmt.Println(string(body))
-		return
+		return nil
 	}
 
 	var tunnels []struct {
@@ -516,13 +507,12 @@ func runList() {
 	}
 
 	if err := json.Unmarshal(body, &tunnels); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to parse response: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("Failed to parse response: %v", err)
 	}
 
 	if len(tunnels) == 0 {
 		fmt.Println("No active tunnels")
-		return
+		return nil
 	}
 
 	fmt.Println("Active tunnels:")
@@ -534,16 +524,17 @@ func runList() {
 			fmt.Printf("  %s  tcp://%s:%d -> %s  (%s)\n", t.ID, opts.server, t.Port, t.Target, t.Status)
 		}
 	}
+	return nil
 }
 
-// runConfig shows/edits configuration
-func runConfig() {
-	if len(os.Args) < 3 {
+// doConfig shows/edits configuration.
+func doConfig(args []string) error {
+	if len(args) < 3 {
 		showConfig()
-		return
+		return nil
 	}
 
-	cmd := os.Args[2]
+	cmd := args[2]
 	switch cmd {
 	case "show":
 		showConfig()
@@ -552,8 +543,9 @@ func runConfig() {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown config command: %s\n", cmd)
 		fmt.Fprintf(os.Stderr, "Usage: wirerift config [show|init]\n")
-		os.Exit(1)
+		return fmt.Errorf("")
 	}
+	return nil
 }
 
 func showConfig() {

@@ -264,6 +264,60 @@ func TestManagerClear(t *testing.T) {
     }
 }
 
+func TestTokensCappedAtBurst(t *testing.T) {
+	// Create a limiter with high rate and small burst
+	limiter := New(10000, 5)
+
+	// Wait a bit for tokens to accumulate beyond burst
+	time.Sleep(10 * time.Millisecond)
+
+	// Tokens should be capped at burst (5)
+	tokens := limiter.Tokens()
+	if tokens > 5.0 {
+		t.Errorf("Tokens() = %v, want <= 5.0 (burst cap)", tokens)
+	}
+	if tokens < 4.9 {
+		t.Errorf("Tokens() = %v, want close to 5.0", tokens)
+	}
+}
+
+func TestReserveNCappedAtBurst(t *testing.T) {
+	// Create a limiter with very low rate and small burst
+	limiter := New(1, 3)
+
+	// Wait for tokens to try to accumulate beyond burst
+	time.Sleep(10 * time.Millisecond)
+
+	// ReserveN should cap tokens at burst before checking
+	// Even after waiting, tokens should not exceed burst
+	wait := limiter.ReserveN(3)
+	if wait != 0 {
+		t.Errorf("ReserveN(3) wait = %v, want 0", wait)
+	}
+
+	// Now all tokens consumed (at rate=1/s), next reserve should require wait
+	wait = limiter.ReserveN(1)
+	if wait == 0 {
+		t.Errorf("ReserveN(1) after burst consumed wait = 0, want > 0")
+	}
+}
+
+func TestAllowAtAllEventsExpired(t *testing.T) {
+	sw := NewSlidingWindow(time.Second, 5)
+	now := time.Now()
+
+	// Add events in the past (all outside the window)
+	sw.AllowAt(now.Add(-3 * time.Second))
+	sw.AllowAt(now.Add(-2 * time.Second))
+	sw.AllowAt(now.Add(-1500 * time.Millisecond))
+
+	// All events are expired, so AllowAt should succeed
+	// This tests the case where validIdx == len(events)
+	if !sw.AllowAt(now) {
+		t.Error("AllowAt(now) = false, want true (all previous events expired)")
+	}
+}
+
 func TestSlidingWindowAllow(t *testing.T) {
     sw := NewSlidingWindow(time.Second, 3)
 

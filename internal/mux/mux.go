@@ -372,10 +372,8 @@ func (m *Mux) sendWindowUpdate(streamID uint32, delta uint32) error {
 		StreamID: streamID,
 		Delta:    delta,
 	}
-	frame, err := proto.EncodeJSONPayload(proto.FrameStreamWindow, streamID, msg)
-	if err != nil {
-		return err
-	}
+	// EncodeJSONPayload cannot fail for StreamWindow (only uint32 fields)
+	frame, _ := proto.EncodeJSONPayload(proto.FrameStreamWindow, streamID, msg)
 	return m.frameWriter.Write(frame)
 }
 

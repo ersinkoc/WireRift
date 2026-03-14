@@ -1,0 +1,711 @@
+
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+		<title>wirerift: Go Coverage Report</title>
+		<style>
+			body {
+				background: black;
+				color: rgb(80, 80, 80);
+			}
+			body, pre, #legend span {
+				font-family: Menlo, monospace;
+				font-weight: bold;
+			}
+			#topbar {
+				background: black;
+				position: fixed;
+				top: 0; left: 0; right: 0;
+				height: 42px;
+				border-bottom: 1px solid rgb(80, 80, 80);
+			}
+			#content {
+				margin-top: 50px;
+			}
+			#nav, #legend {
+				float: left;
+				margin-left: 10px;
+			}
+			#legend {
+				margin-top: 12px;
+			}
+			#nav {
+				margin-top: 10px;
+			}
+			#legend span {
+				margin: 0 5px;
+			}
+			.cov0 { color: rgb(192, 0, 0) }
+.cov1 { color: rgb(128, 128, 128) }
+.cov2 { color: rgb(116, 140, 131) }
+.cov3 { color: rgb(104, 152, 134) }
+.cov4 { color: rgb(92, 164, 137) }
+.cov5 { color: rgb(80, 176, 140) }
+.cov6 { color: rgb(68, 188, 143) }
+.cov7 { color: rgb(56, 200, 146) }
+.cov8 { color: rgb(44, 212, 149) }
+.cov9 { color: rgb(32, 224, 152) }
+.cov10 { color: rgb(20, 236, 155) }
+
+		</style>
+	</head>
+	<body>
+		<div id="topbar">
+			<div id="nav">
+				<select id="files">
+				
+				<option value="file0">github.com/wirerift/wirerift/cmd/wirerift/main.go (73.6%)</option>
+				
+				</select>
+			</div>
+			<div id="legend">
+				<span>not tracked</span>
+			
+				<span class="cov0">not covered</span>
+				<span class="cov8">covered</span>
+			
+			</div>
+		</div>
+		<div id="content">
+		
+		<pre class="file" id="file0" style="display: none">package main
+
+import (
+        "bufio"
+        "context"
+        "encoding/json"
+        "flag"
+        "fmt"
+        "io"
+        "log/slog"
+        "net/http"
+        "os"
+        "os/signal"
+        "strconv"
+        "strings"
+        "syscall"
+        "time"
+
+        "github.com/wirerift/wirerift/internal/client"
+)
+
+var (
+        version = "dev"
+        commit  = "none"
+        date    = "unknown"
+)
+
+func main() <span class="cov8" title="1">{
+        if len(os.Args) &lt; 2 </span><span class="cov8" title="1">{
+                printUsage()
+                os.Exit(1)
+        }</span>
+
+        <span class="cov8" title="1">cmd := os.Args[1]
+        switch cmd </span>{
+        case "http":<span class="cov8" title="1">
+                runHTTP()</span>
+        case "tcp":<span class="cov8" title="1">
+                runTCP()</span>
+        case "start":<span class="cov8" title="1">
+                runStart()</span>
+        case "list":<span class="cov8" title="1">
+                runList()</span>
+        case "config":<span class="cov8" title="1">
+                runConfig()</span>
+        case "version":<span class="cov0" title="0">
+                fmt.Printf("WireRift %s (commit: %s, built: %s)\n", version, commit, date)</span>
+        case "help", "-h", "--help":<span class="cov0" title="0">
+                printUsage()</span>
+        default:<span class="cov8" title="1">
+                fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", cmd)
+                printUsage()
+                os.Exit(1)</span>
+        }
+}
+
+func printUsage() <span class="cov8" title="1">{
+        fmt.Println(`WireRift - Expose localhost to the world
+
+Usage:
+  wirerift &lt;command&gt; [options]
+
+Commands:
+  http &lt;local-port&gt; [subdomain]   Create an HTTP tunnel
+  tcp &lt;local-port&gt;                Create a TCP tunnel
+  start [config-file]             Start tunnels from config file
+  list                            List active tunnels
+  config                          Show/edit configuration
+  version                         Show version information
+  help                            Show this help
+
+Examples:
+  wirerift http 8080                    Create HTTP tunnel on port 8080
+  wirerift http 8080 myapp              Create HTTP tunnel with subdomain
+  wirerift tcp 25565                    Create TCP tunnel on port 25565
+  wirerift start wirerift.yaml          Start tunnels from config
+
+Environment Variables:
+  WIRERIFT_SERVER    Server address (default: localhost:4443)
+  WIRERIFT_TOKEN     Authentication token`)
+}</span>
+
+// Common flags and options
+type commonOptions struct {
+        server string
+        token  string
+}
+
+func parseCommonOptions() commonOptions <span class="cov8" title="1">{
+        return commonOptions{
+                server: getEnv("WIRERIFT_SERVER", "localhost:4443"),
+                token:  getEnv("WIRERIFT_TOKEN", ""),
+        }
+}</span>
+
+func getEnv(key, defaultVal string) string <span class="cov8" title="1">{
+        if val := os.Getenv(key); val != "" </span><span class="cov8" title="1">{
+                return val
+        }</span>
+        <span class="cov8" title="1">return defaultVal</span>
+}
+
+func createLogger(verbose bool) *slog.Logger <span class="cov8" title="1">{
+        level := slog.LevelWarn
+        if verbose </span><span class="cov8" title="1">{
+                level = slog.LevelDebug
+        }</span>
+        <span class="cov8" title="1">return slog.New(slog.NewTextHandler(os.Stderr, &amp;slog.HandlerOptions{Level: level}))</span>
+}
+
+// runHTTP creates an HTTP tunnel
+func runHTTP() <span class="cov8" title="1">{
+        fs := flag.NewFlagSet("http", flag.ExitOnError)
+        server := fs.String("server", "", "Server address (default: localhost:4443)")
+        token := fs.String("token", "", "Authentication token")
+        subdomain := fs.String("subdomain", "", "Requested subdomain")
+        verbose := fs.Bool("v", false, "Verbose output")
+
+        fs.Usage = func() </span><span class="cov8" title="1">{
+                fmt.Fprintf(os.Stderr, "Usage: wirerift http [options] &lt;local-port&gt; [subdomain]\n\n")
+                fmt.Fprintf(os.Stderr, "Create an HTTP tunnel.\n\n")
+                fmt.Fprintf(os.Stderr, "Options:\n")
+                fs.PrintDefaults()
+                fmt.Fprintf(os.Stderr, "\nExamples:\n")
+                fmt.Fprintf(os.Stderr, "  wirerift http 8080\n")
+                fmt.Fprintf(os.Stderr, "  wirerift http 8080 myapp\n")
+                fmt.Fprintf(os.Stderr, "  wirerift http -subdomain myapp 8080\n")
+        }</span>
+
+        <span class="cov8" title="1">fs.Parse(os.Args[2:])
+
+        opts := parseCommonOptions()
+        if *server != "" </span><span class="cov8" title="1">{
+                opts.server = *server
+        }</span>
+        <span class="cov8" title="1">if *token != "" </span><span class="cov8" title="1">{
+                opts.token = *token
+        }</span>
+
+        <span class="cov8" title="1">args := fs.Args()
+        if len(args) &lt; 1 </span><span class="cov8" title="1">{
+                fs.Usage()
+                os.Exit(1)
+        }</span>
+
+        <span class="cov8" title="1">localPort, err := strconv.Atoi(args[0])
+        if err != nil </span><span class="cov8" title="1">{
+                fmt.Fprintf(os.Stderr, "Invalid port: %s\n", args[0])
+                os.Exit(1)
+        }</span>
+
+        // Subdomain from positional arg or flag
+        <span class="cov8" title="1">reqSubdomain := *subdomain
+        if len(args) &gt; 1 &amp;&amp; reqSubdomain == "" </span><span class="cov8" title="1">{
+                reqSubdomain = args[1]
+        }</span>
+
+        <span class="cov8" title="1">logger := createLogger(*verbose)
+
+        // Create client
+        c := client.New(client.Config{
+                ServerAddr: opts.server,
+                Token:      opts.token,
+        }, logger)
+
+        ctx, cancel := context.WithCancel(context.Background())
+        defer cancel()
+
+        // Handle signals
+        sigCh := make(chan os.Signal, 1)
+        signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+        go func() </span><span class="cov8" title="1">{
+                &lt;-sigCh
+                if *verbose </span><span class="cov0" title="0">{
+                        fmt.Println("\nShutting down...")
+                }</span>
+                <span class="cov0" title="0">cancel()</span>
+        }()
+
+        // Connect to server
+        <span class="cov8" title="1">if err := c.Connect(); err != nil </span><span class="cov8" title="1">{
+                fmt.Fprintf(os.Stderr, "Failed to connect: %v\n", err)
+                os.Exit(1)
+        }</span>
+
+        // Create tunnel
+        <span class="cov0" title="0">var tunnelOpts []client.HTTPOption
+        if reqSubdomain != "" </span><span class="cov0" title="0">{
+                tunnelOpts = append(tunnelOpts, client.WithSubdomain(reqSubdomain))
+        }</span>
+
+        <span class="cov0" title="0">tunnel, err := c.HTTP(fmt.Sprintf("localhost:%d", localPort), tunnelOpts...)
+        if err != nil </span><span class="cov0" title="0">{
+                fmt.Fprintf(os.Stderr, "Failed to create tunnel: %v\n", err)
+                os.Exit(1)
+        }</span>
+
+        <span class="cov0" title="0">fmt.Printf("HTTP tunnel created: %s -&gt; http://localhost:%d\n", tunnel.PublicURL, localPort)
+        if tunnel.Subdomain != "" </span><span class="cov0" title="0">{
+                fmt.Printf("Subdomain: %s\n", tunnel.Subdomain)
+        }</span>
+
+        <span class="cov0" title="0">if *verbose </span><span class="cov0" title="0">{
+                fmt.Println("Press Ctrl+C to stop")
+        }</span>
+
+        // Wait for context
+        <span class="cov0" title="0">&lt;-ctx.Done()
+        c.Close()</span>
+}
+
+// runTCP creates a TCP tunnel
+func runTCP() <span class="cov8" title="1">{
+        fs := flag.NewFlagSet("tcp", flag.ExitOnError)
+        server := fs.String("server", "", "Server address (default: localhost:4443)")
+        token := fs.String("token", "", "Authentication token")
+        verbose := fs.Bool("v", false, "Verbose output")
+
+        fs.Usage = func() </span><span class="cov8" title="1">{
+                fmt.Fprintf(os.Stderr, "Usage: wirerift tcp [options] &lt;local-port&gt;\n\n")
+                fmt.Fprintf(os.Stderr, "Create a TCP tunnel.\n\n")
+                fmt.Fprintf(os.Stderr, "Options:\n")
+                fs.PrintDefaults()
+                fmt.Fprintf(os.Stderr, "\nExamples:\n")
+                fmt.Fprintf(os.Stderr, "  wirerift tcp 25565\n")
+                fmt.Fprintf(os.Stderr, "  wirerift tcp 22\n")
+        }</span>
+
+        <span class="cov8" title="1">fs.Parse(os.Args[2:])
+
+        opts := parseCommonOptions()
+        if *server != "" </span><span class="cov8" title="1">{
+                opts.server = *server
+        }</span>
+        <span class="cov8" title="1">if *token != "" </span><span class="cov8" title="1">{
+                opts.token = *token
+        }</span>
+
+        <span class="cov8" title="1">args := fs.Args()
+        if len(args) &lt; 1 </span><span class="cov8" title="1">{
+                fs.Usage()
+                os.Exit(1)
+        }</span>
+
+        <span class="cov8" title="1">localPort, err := strconv.Atoi(args[0])
+        if err != nil </span><span class="cov8" title="1">{
+                fmt.Fprintf(os.Stderr, "Invalid port: %s\n", args[0])
+                os.Exit(1)
+        }</span>
+
+        <span class="cov8" title="1">logger := createLogger(*verbose)
+
+        // Create client
+        c := client.New(client.Config{
+                ServerAddr: opts.server,
+                Token:      opts.token,
+        }, logger)
+
+        ctx, cancel := context.WithCancel(context.Background())
+        defer cancel()
+
+        // Handle signals
+        sigCh := make(chan os.Signal, 1)
+        signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+        go func() </span><span class="cov8" title="1">{
+                &lt;-sigCh
+                if *verbose </span><span class="cov0" title="0">{
+                        fmt.Println("\nShutting down...")
+                }</span>
+                <span class="cov0" title="0">cancel()</span>
+        }()
+
+        // Connect to server
+        <span class="cov8" title="1">if err := c.Connect(); err != nil </span><span class="cov8" title="1">{
+                fmt.Fprintf(os.Stderr, "Failed to connect: %v\n", err)
+                os.Exit(1)
+        }</span>
+
+        // Create tunnel
+        <span class="cov0" title="0">tunnel, err := c.TCP(fmt.Sprintf("localhost:%d", localPort), 0)
+        if err != nil </span><span class="cov0" title="0">{
+                fmt.Fprintf(os.Stderr, "Failed to create tunnel: %v\n", err)
+                os.Exit(1)
+        }</span>
+
+        <span class="cov0" title="0">fmt.Printf("TCP tunnel created: %s:%d -&gt; localhost:%d\n", opts.server, tunnel.Port, localPort)
+
+        if *verbose </span><span class="cov0" title="0">{
+                fmt.Println("Press Ctrl+C to stop")
+        }</span>
+
+        // Wait for context
+        <span class="cov0" title="0">&lt;-ctx.Done()
+        c.Close()</span>
+}
+
+// runStart starts tunnels from a config file
+func runStart() <span class="cov8" title="1">{
+        fs := flag.NewFlagSet("start", flag.ExitOnError)
+        verbose := fs.Bool("v", false, "Verbose output")
+
+        fs.Usage = func() </span><span class="cov0" title="0">{
+                fmt.Fprintf(os.Stderr, "Usage: wirerift start [options] [config-file]\n\n")
+                fmt.Fprintf(os.Stderr, "Start tunnels from config file.\n\n")
+                fmt.Fprintf(os.Stderr, "Options:\n")
+                fs.PrintDefaults()
+                fmt.Fprintf(os.Stderr, "\nDefault config file: wirerift.yaml\n")
+        }</span>
+
+        <span class="cov8" title="1">fs.Parse(os.Args[2:])
+
+        configFile := "wirerift.yaml"
+        if len(fs.Args()) &gt; 0 </span><span class="cov8" title="1">{
+                configFile = fs.Args()[0]
+        }</span>
+
+        <span class="cov8" title="1">cfg, err := loadConfig(configFile)
+        if err != nil </span><span class="cov8" title="1">{
+                fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+                os.Exit(1)
+        }</span>
+
+        <span class="cov8" title="1">if *verbose </span><span class="cov8" title="1">{
+                fmt.Printf("Loaded config from %s\n", configFile)
+                fmt.Printf("Server: %s\n", cfg.Server)
+                fmt.Printf("Tunnels: %d\n", len(cfg.Tunnels))
+        }</span>
+
+        <span class="cov8" title="1">logger := createLogger(*verbose)
+
+        ctx, cancel := context.WithCancel(context.Background())
+        defer cancel()
+
+        // Handle signals
+        sigCh := make(chan os.Signal, 1)
+        signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+        go func() </span><span class="cov8" title="1">{
+                &lt;-sigCh
+                fmt.Println("\nShutting down...")
+                cancel()
+        }</span>()
+
+        <span class="cov8" title="1">c := client.New(client.Config{
+                ServerAddr: cfg.Server,
+                Token:      cfg.Token,
+        }, logger)
+
+        // Connect to server
+        if err := c.Connect(); err != nil </span><span class="cov8" title="1">{
+                fmt.Fprintf(os.Stderr, "Failed to connect: %v\n", err)
+                os.Exit(1)
+        }</span>
+
+        <span class="cov0" title="0">for _, t := range cfg.Tunnels </span><span class="cov0" title="0">{
+                switch t.Type </span>{
+                case "http", "":<span class="cov0" title="0">
+                        var opts []client.HTTPOption
+                        if t.Subdomain != "" </span><span class="cov0" title="0">{
+                                opts = append(opts, client.WithSubdomain(t.Subdomain))
+                        }</span>
+                        <span class="cov0" title="0">tunnel, err := c.HTTP(fmt.Sprintf("localhost:%d", t.LocalPort), opts...)
+                        if err != nil </span><span class="cov0" title="0">{
+                                fmt.Fprintf(os.Stderr, "Failed to create HTTP tunnel: %v\n", err)
+                                continue</span>
+                        }
+                        <span class="cov0" title="0">fmt.Printf("HTTP tunnel: %s -&gt; localhost:%d\n", tunnel.PublicURL, t.LocalPort)</span>
+                case "tcp":<span class="cov0" title="0">
+                        tunnel, err := c.TCP(fmt.Sprintf("localhost:%d", t.LocalPort), 0)
+                        if err != nil </span><span class="cov0" title="0">{
+                                fmt.Fprintf(os.Stderr, "Failed to create TCP tunnel: %v\n", err)
+                                continue</span>
+                        }
+                        <span class="cov0" title="0">fmt.Printf("TCP tunnel: port %d -&gt; localhost:%d\n", tunnel.Port, t.LocalPort)</span>
+                default:<span class="cov0" title="0">
+                        fmt.Fprintf(os.Stderr, "Unknown tunnel type: %s\n", t.Type)</span>
+                }
+        }
+
+        <span class="cov0" title="0">fmt.Println("All tunnels started. Press Ctrl+C to stop.")
+
+        &lt;-ctx.Done()
+        c.Close()</span>
+}
+
+// TunnelConfig represents a tunnel in the config file
+type TunnelConfig struct {
+        Type      string `yaml:"type"`
+        LocalPort int    `yaml:"local_port"`
+        Subdomain string `yaml:"subdomain"`
+}
+
+// ConfigFile represents the config file structure
+type ConfigFile struct {
+        Server  string         `yaml:"server"`
+        Token   string         `yaml:"token"`
+        Tunnels []TunnelConfig `yaml:"tunnels"`
+}
+
+func loadConfig(path string) (*ConfigFile, error) <span class="cov8" title="1">{
+        data, err := os.ReadFile(path)
+        if err != nil </span><span class="cov8" title="1">{
+                return nil, err
+        }</span>
+
+        <span class="cov8" title="1">cfg := &amp;ConfigFile{
+                Server: getEnv("WIRERIFT_SERVER", "localhost:4443"),
+                Token:  getEnv("WIRERIFT_TOKEN", ""),
+        }
+
+        // Simple YAML parsing (basic implementation)
+        lines := strings.Split(string(data), "\n")
+        currentSection := ""
+        tunnelIdx := -1
+
+        for _, line := range lines </span><span class="cov8" title="1">{
+                line = strings.TrimSpace(line)
+                if line == "" || strings.HasPrefix(line, "#") </span><span class="cov8" title="1">{
+                        continue</span>
+                }
+
+                <span class="cov8" title="1">if strings.HasPrefix(line, "tunnels:") </span><span class="cov8" title="1">{
+                        currentSection = "tunnels"
+                        continue</span>
+                }
+
+                <span class="cov8" title="1">if currentSection == "tunnels" &amp;&amp; strings.HasPrefix(line, "- ") </span><span class="cov8" title="1">{
+                        cfg.Tunnels = append(cfg.Tunnels, TunnelConfig{})
+                        tunnelIdx++
+                        line = strings.TrimPrefix(line, "- ")
+                }</span>
+
+                <span class="cov8" title="1">parts := strings.SplitN(line, ":", 2)
+                if len(parts) != 2 </span><span class="cov8" title="1">{
+                        continue</span>
+                }
+                <span class="cov8" title="1">key := strings.TrimSpace(parts[0])
+                value := strings.TrimSpace(parts[1])
+                value = strings.Trim(value, `"'`)
+
+                if currentSection == "tunnels" &amp;&amp; tunnelIdx &gt;= 0 </span><span class="cov8" title="1">{
+                        switch key </span>{
+                        case "type":<span class="cov8" title="1">
+                                cfg.Tunnels[tunnelIdx].Type = value</span>
+                        case "local_port":<span class="cov8" title="1">
+                                cfg.Tunnels[tunnelIdx].LocalPort, _ = strconv.Atoi(value)</span>
+                        case "subdomain":<span class="cov8" title="1">
+                                cfg.Tunnels[tunnelIdx].Subdomain = value</span>
+                        }
+                } else<span class="cov8" title="1"> {
+                        switch key </span>{
+                        case "server":<span class="cov8" title="1">
+                                cfg.Server = value</span>
+                        case "token":<span class="cov8" title="1">
+                                cfg.Token = value</span>
+                        }
+                }
+        }
+
+        <span class="cov8" title="1">return cfg, nil</span>
+}
+
+// runList lists active tunnels
+func runList() <span class="cov8" title="1">{
+        fs := flag.NewFlagSet("list", flag.ExitOnError)
+        server := fs.String("server", "", "Server address (default: localhost:4443)")
+        token := fs.String("token", "", "Authentication token")
+        jsonOutput := fs.Bool("json", false, "JSON output")
+
+        fs.Usage = func() </span><span class="cov0" title="0">{
+                fmt.Fprintf(os.Stderr, "Usage: wirerift list [options]\n\n")
+                fmt.Fprintf(os.Stderr, "List active tunnels.\n\n")
+                fmt.Fprintf(os.Stderr, "Options:\n")
+                fs.PrintDefaults()
+        }</span>
+
+        <span class="cov8" title="1">fs.Parse(os.Args[2:])
+
+        opts := parseCommonOptions()
+        if *server != "" </span><span class="cov8" title="1">{
+                opts.server = *server
+        }</span>
+        <span class="cov8" title="1">if *token != "" </span><span class="cov8" title="1">{
+                opts.token = *token
+        }</span>
+
+        // Query the dashboard API
+        <span class="cov8" title="1">url := fmt.Sprintf("http://%s/api/tunnels", strings.Split(opts.server, ":")[0]+":4040")
+
+        req, _ := http.NewRequest("GET", url, nil)
+        if opts.token != "" </span><span class="cov8" title="1">{
+                req.Header.Set("Authorization", "Bearer "+opts.token)
+        }</span>
+
+        <span class="cov8" title="1">resp, err := http.DefaultClient.Do(req)
+        if err != nil </span><span class="cov8" title="1">{
+                fmt.Fprintf(os.Stderr, "Failed to connect to server: %v\n", err)
+                os.Exit(1)
+        }</span>
+        <span class="cov0" title="0">defer resp.Body.Close()
+
+        body, _ := io.ReadAll(resp.Body)
+
+        if *jsonOutput </span><span class="cov0" title="0">{
+                fmt.Println(string(body))
+                return
+        }</span>
+
+        <span class="cov0" title="0">var tunnels []struct {
+                ID        string    `json:"id"`
+                Type      string    `json:"type"`
+                URL       string    `json:"url"`
+                Port      int       `json:"port"`
+                Target    string    `json:"target"`
+                Status    string    `json:"status"`
+                CreatedAt time.Time `json:"created_at"`
+        }
+
+        if err := json.Unmarshal(body, &amp;tunnels); err != nil </span><span class="cov0" title="0">{
+                fmt.Fprintf(os.Stderr, "Failed to parse response: %v\n", err)
+                os.Exit(1)
+        }</span>
+
+        <span class="cov0" title="0">if len(tunnels) == 0 </span><span class="cov0" title="0">{
+                fmt.Println("No active tunnels")
+                return
+        }</span>
+
+        <span class="cov0" title="0">fmt.Println("Active tunnels:")
+        fmt.Println()
+        for _, t := range tunnels </span><span class="cov0" title="0">{
+                if t.Type == "http" </span><span class="cov0" title="0">{
+                        fmt.Printf("  %s  %s -&gt; %s  (%s)\n", t.ID, t.URL, t.Target, t.Status)
+                }</span> else<span class="cov0" title="0"> {
+                        fmt.Printf("  %s  tcp://%s:%d -&gt; %s  (%s)\n", t.ID, opts.server, t.Port, t.Target, t.Status)
+                }</span>
+        }
+}
+
+// runConfig shows/edits configuration
+func runConfig() <span class="cov8" title="1">{
+        if len(os.Args) &lt; 3 </span><span class="cov8" title="1">{
+                showConfig()
+                return
+        }</span>
+
+        <span class="cov8" title="1">cmd := os.Args[2]
+        switch cmd </span>{
+        case "show":<span class="cov8" title="1">
+                showConfig()</span>
+        case "init":<span class="cov8" title="1">
+                initConfig()</span>
+        default:<span class="cov8" title="1">
+                fmt.Fprintf(os.Stderr, "Unknown config command: %s\n", cmd)
+                fmt.Fprintf(os.Stderr, "Usage: wirerift config [show|init]\n")
+                os.Exit(1)</span>
+        }
+}
+
+func showConfig() <span class="cov8" title="1">{
+        configFile := "wirerift.yaml"
+        if _, err := os.Stat(configFile); os.IsNotExist(err) </span><span class="cov8" title="1">{
+                fmt.Println("No configuration file found.")
+                fmt.Println("Run 'wirerift config init' to create one.")
+                return
+        }</span>
+
+        <span class="cov8" title="1">data, err := os.ReadFile(configFile)
+        if err != nil </span><span class="cov8" title="1">{
+                fmt.Fprintf(os.Stderr, "Failed to read config: %v\n", err)
+                os.Exit(1)
+        }</span>
+
+        <span class="cov8" title="1">fmt.Println(string(data))</span>
+}
+
+func initConfig() <span class="cov8" title="1">{
+        configFile := "wirerift.yaml"
+
+        if _, err := os.Stat(configFile); err == nil </span><span class="cov8" title="1">{
+                fmt.Printf("Config file %s already exists. Overwrite? (y/N): ", configFile)
+                reader := bufio.NewReader(os.Stdin)
+                input, _ := reader.ReadString('\n')
+                if strings.TrimSpace(strings.ToLower(input)) != "y" </span><span class="cov8" title="1">{
+                        fmt.Println("Aborted")
+                        return
+                }</span>
+        }
+
+        <span class="cov8" title="1">configContent := `# WireRift configuration file
+server: localhost:4443
+token: ""  # Set your API token here
+
+tunnels:
+  - type: http
+    local_port: 8080
+    subdomain: ""  # Leave empty for random subdomain
+  # - type: tcp
+  #   local_port: 25565
+`
+
+        if err := os.WriteFile(configFile, []byte(configContent), 0644); err != nil </span><span class="cov0" title="0">{
+                fmt.Fprintf(os.Stderr, "Failed to write config: %v\n", err)
+                os.Exit(1)
+        }</span>
+
+        <span class="cov8" title="1">fmt.Printf("Created config file: %s\n", configFile)
+        fmt.Println("Edit the file to configure your tunnels.")</span>
+}
+</pre>
+		
+		</div>
+	</body>
+	<script>
+	(function() {
+		var files = document.getElementById('files');
+		var visible;
+		files.addEventListener('change', onChange, false);
+		function select(part) {
+			if (visible)
+				visible.style.display = 'none';
+			visible = document.getElementById(part);
+			if (!visible)
+				return;
+			files.value = part;
+			visible.style.display = 'block';
+			location.hash = part;
+		}
+		function onChange() {
+			select(files.value);
+			window.scrollTo(0, 0);
+		}
+		if (location.hash != "") {
+			select(location.hash.substr(1));
+		}
+		if (!visible) {
+			select("file0");
+		}
+	})();
+	</script>
+</html>

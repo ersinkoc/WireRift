@@ -742,3 +742,160 @@ func TestHandleStatsWithData(t *testing.T) {
 		t.Error("Response should contain active_sessions")
 	}
 }
+
+// TestHandleStatsMethodNotAllowed tests stats endpoint with POST method
+func TestHandleStatsMethodNotAllowed(t *testing.T) {
+	authMgr := auth.NewManager()
+	srv := server.New(server.DefaultConfig(), nil)
+
+	d := New(Config{
+		Server:      srv,
+		AuthManager: authMgr,
+	})
+
+	handler := d.Handler()
+
+	// POST should not be allowed
+	req := httptest.NewRequest("POST", "/api/stats", nil)
+	req.Header.Set("Authorization", "Bearer "+authMgr.DevToken())
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+// TestHandleDomainActionsNoDomain tests domain actions with empty domain
+func TestHandleDomainActionsNoDomain(t *testing.T) {
+	authMgr := auth.NewManager()
+	srv := server.New(server.DefaultConfig(), nil)
+	domainMgr := config.NewDomainManager("test.dev")
+
+	d := New(Config{
+		Server:      srv,
+		AuthManager: authMgr,
+		DomainMgr:   domainMgr,
+	})
+
+	handler := d.Handler()
+
+	// GET /api/domains/ (empty domain)
+	req := httptest.NewRequest("GET", "/api/domains/", nil)
+	req.Header.Set("Authorization", "Bearer "+authMgr.DevToken())
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	// Empty domain results in GetDomain("") which returns "not found" error → 404
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+// TestHandleDomainActionsDeleteNotFound tests deleting non-existent domain
+func TestHandleDomainActionsDeleteNotFound(t *testing.T) {
+	authMgr := auth.NewManager()
+	srv := server.New(server.DefaultConfig(), nil)
+	domainMgr := config.NewDomainManager("test.dev")
+
+	d := New(Config{
+		Server:      srv,
+		AuthManager: authMgr,
+		DomainMgr:   domainMgr,
+	})
+
+	handler := d.Handler()
+
+	// DELETE /api/domains/nonexistent.test.dev
+	// RemoveDomain doesn't error for non-existent domains, returns 204
+	req := httptest.NewRequest("DELETE", "/api/domains/nonexistent.test.dev", nil)
+	req.Header.Set("Authorization", "Bearer "+authMgr.DevToken())
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+// TestHandleDomainsPostInvalidDomain tests POST /api/domains with an invalid domain name
+func TestHandleDomainsPostInvalidDomain(t *testing.T) {
+	authMgr := auth.NewManager()
+	srv := server.New(server.DefaultConfig(), nil)
+	domainMgr := config.NewDomainManager("test.dev")
+
+	d := New(Config{
+		Server:      srv,
+		AuthManager: authMgr,
+		DomainMgr:   domainMgr,
+	})
+
+	handler := d.Handler()
+
+	// POST with empty domain (invalid)
+	body := strings.NewReader(`{"domain":"","account_id":"test"}`)
+	req := httptest.NewRequest("POST", "/api/domains", body)
+	req.Header.Set("Authorization", "Bearer "+authMgr.DevToken())
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+// TestHandleDomainsPostDuplicateDomain tests POST /api/domains with a duplicate domain
+func TestHandleDomainsPostDuplicateDomain(t *testing.T) {
+	authMgr := auth.NewManager()
+	srv := server.New(server.DefaultConfig(), nil)
+	domainMgr := config.NewDomainManager("test.dev")
+
+	// Add a domain first
+	domainMgr.AddDomain("existing.test.dev", "test-account")
+
+	d := New(Config{
+		Server:      srv,
+		AuthManager: authMgr,
+		DomainMgr:   domainMgr,
+	})
+
+	handler := d.Handler()
+
+	// POST with same domain name (should fail as duplicate)
+	body := strings.NewReader(`{"domain":"existing.test.dev","account_id":"test"}`)
+	req := httptest.NewRequest("POST", "/api/domains", body)
+	req.Header.Set("Authorization", "Bearer "+authMgr.DevToken())
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+// TestHandleDomainActionsVerifyNonExistent tests verifying a domain that doesn't exist
+func TestHandleDomainActionsVerifyNonExistent(t *testing.T) {
+	authMgr := auth.NewManager()
+	srv := server.New(server.DefaultConfig(), nil)
+	domainMgr := config.NewDomainManager("test.dev")
+
+	d := New(Config{
+		Server:      srv,
+		AuthManager: authMgr,
+		DomainMgr:   domainMgr,
+	})
+
+	handler := d.Handler()
+
+	// POST /api/domains/nonexistent.test.dev/verify (domain not added)
+	req := httptest.NewRequest("POST", "/api/domains/nonexistent.test.dev/verify", nil)
+	req.Header.Set("Authorization", "Bearer "+authMgr.DevToken())
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}

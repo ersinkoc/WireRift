@@ -1,0 +1,657 @@
+
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+		<title>dashboard: Go Coverage Report</title>
+		<style>
+			body {
+				background: black;
+				color: rgb(80, 80, 80);
+			}
+			body, pre, #legend span {
+				font-family: Menlo, monospace;
+				font-weight: bold;
+			}
+			#topbar {
+				background: black;
+				position: fixed;
+				top: 0; left: 0; right: 0;
+				height: 42px;
+				border-bottom: 1px solid rgb(80, 80, 80);
+			}
+			#content {
+				margin-top: 50px;
+			}
+			#nav, #legend {
+				float: left;
+				margin-left: 10px;
+			}
+			#legend {
+				margin-top: 12px;
+			}
+			#nav {
+				margin-top: 10px;
+			}
+			#legend span {
+				margin: 0 5px;
+			}
+			.cov0 { color: rgb(192, 0, 0) }
+.cov1 { color: rgb(128, 128, 128) }
+.cov2 { color: rgb(116, 140, 131) }
+.cov3 { color: rgb(104, 152, 134) }
+.cov4 { color: rgb(92, 164, 137) }
+.cov5 { color: rgb(80, 176, 140) }
+.cov6 { color: rgb(68, 188, 143) }
+.cov7 { color: rgb(56, 200, 146) }
+.cov8 { color: rgb(44, 212, 149) }
+.cov9 { color: rgb(32, 224, 152) }
+.cov10 { color: rgb(20, 236, 155) }
+
+		</style>
+	</head>
+	<body>
+		<div id="topbar">
+			<div id="nav">
+				<select id="files">
+				
+				<option value="file0">github.com/wirerift/wirerift/internal/dashboard/dashboard.go (94.0%)</option>
+				
+				</select>
+			</div>
+			<div id="legend">
+				<span>not tracked</span>
+			
+				<span class="cov0">not covered</span>
+				<span class="cov8">covered</span>
+			
+			</div>
+		</div>
+		<div id="content">
+		
+		<pre class="file" id="file0" style="display: none">package dashboard
+
+import (
+        "embed"
+        "encoding/json"
+        "fmt"
+        "io/fs"
+        "net/http"
+        "strings"
+        "time"
+
+        "github.com/wirerift/wirerift/internal/auth"
+        "github.com/wirerift/wirerift/internal/config"
+        "github.com/wirerift/wirerift/internal/server"
+)
+
+//go:embed static/*
+var staticFS embed.FS
+
+// Dashboard provides a web UI for managing WireRift.
+type Dashboard struct {
+        server       *server.Server
+        authManager  *auth.Manager
+        domainMgr    *config.DomainManager
+        port         int
+        httpsEnabled bool
+}
+
+// Config holds dashboard configuration.
+type Config struct {
+        Server       *server.Server
+        AuthManager  *auth.Manager
+        DomainMgr    *config.DomainManager
+        Port         int
+        HTTPSEnabled bool
+}
+
+// New creates a new dashboard.
+func New(cfg Config) *Dashboard <span class="cov8" title="1">{
+        if cfg.Port == 0 </span><span class="cov8" title="1">{
+                cfg.Port = 4040
+        }</span>
+        <span class="cov8" title="1">return &amp;Dashboard{
+                server:       cfg.Server,
+                authManager:  cfg.AuthManager,
+                domainMgr:    cfg.DomainMgr,
+                port:         cfg.Port,
+                httpsEnabled: cfg.HTTPSEnabled,
+        }</span>
+}
+
+// Handler returns the HTTP handler for the dashboard.
+func (d *Dashboard) Handler() http.Handler <span class="cov8" title="1">{
+        mux := http.NewServeMux()
+
+        // API endpoints
+        mux.HandleFunc("/api/tunnels", d.authMiddleware(d.handleTunnels))
+        mux.HandleFunc("/api/sessions", d.authMiddleware(d.handleSessions))
+        mux.HandleFunc("/api/stats", d.authMiddleware(d.handleStats))
+        mux.HandleFunc("/api/domains", d.authMiddleware(d.handleDomains))
+        mux.HandleFunc("/api/domains/", d.authMiddleware(d.handleDomainActions))
+
+        // Static files
+        staticContent, err := fs.Sub(staticFS, "static")
+        if err != nil </span><span class="cov0" title="0">{
+                // Fallback to inline HTML if static files aren't available
+                mux.HandleFunc("/", d.serveIndex)
+        }</span> else<span class="cov8" title="1"> {
+                fileServer := http.FileServer(http.FS(staticContent))
+                mux.Handle("/static/", http.StripPrefix("/static/", fileServer))
+                mux.HandleFunc("/", d.serveIndex)
+        }</span>
+
+        <span class="cov8" title="1">return mux</span>
+}
+
+// authMiddleware checks for valid authentication.
+func (d *Dashboard) authMiddleware(next http.HandlerFunc) http.HandlerFunc <span class="cov8" title="1">{
+        return func(w http.ResponseWriter, r *http.Request) </span><span class="cov8" title="1">{
+                // Check for Bearer token
+                auth := r.Header.Get("Authorization")
+                if auth == "" </span><span class="cov8" title="1">{
+                        // Check for session cookie
+                        cookie, err := r.Cookie("wirerift_session")
+                        if err == nil &amp;&amp; cookie.Value != "" </span><span class="cov8" title="1">{
+                                // Validate session token
+                                _, _, err := d.authManager.ValidateToken(cookie.Value)
+                                if err == nil </span><span class="cov8" title="1">{
+                                        next(w, r)
+                                        return
+                                }</span>
+                        }
+                        <span class="cov8" title="1">d.jsonError(w, "Unauthorized", http.StatusUnauthorized)
+                        return</span>
+                }
+
+                <span class="cov8" title="1">parts := strings.SplitN(auth, " ", 2)
+                if len(parts) != 2 || parts[0] != "Bearer" </span><span class="cov8" title="1">{
+                        d.jsonError(w, "Invalid authorization", http.StatusUnauthorized)
+                        return
+                }</span>
+
+                <span class="cov8" title="1">_, _, err := d.authManager.ValidateToken(parts[1])
+                if err != nil </span><span class="cov8" title="1">{
+                        d.jsonError(w, "Invalid token", http.StatusUnauthorized)
+                        return
+                }</span>
+
+                <span class="cov8" title="1">next(w, r)</span>
+        }
+}
+
+// handleTunnels handles GET /api/tunnels
+func (d *Dashboard) handleTunnels(w http.ResponseWriter, r *http.Request) <span class="cov8" title="1">{
+        if r.Method != http.MethodGet </span><span class="cov8" title="1">{
+                d.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
+                return
+        }</span>
+
+        <span class="cov8" title="1">tunnels := d.server.ListTunnels()
+        d.jsonResponse(w, tunnels)</span>
+}
+
+// handleSessions handles GET /api/sessions
+func (d *Dashboard) handleSessions(w http.ResponseWriter, r *http.Request) <span class="cov8" title="1">{
+        if r.Method != http.MethodGet </span><span class="cov8" title="1">{
+                d.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
+                return
+        }</span>
+
+        <span class="cov8" title="1">sessions := d.server.ListSessions()
+        d.jsonResponse(w, sessions)</span>
+}
+
+// handleStats handles GET /api/stats
+func (d *Dashboard) handleStats(w http.ResponseWriter, r *http.Request) <span class="cov8" title="1">{
+        if r.Method != http.MethodGet </span><span class="cov8" title="1">{
+                d.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
+                return
+        }</span>
+
+        <span class="cov8" title="1">stats := d.server.Stats()
+        stats["uptime"] = time.Since(d.server.StartTime()).Seconds()
+        stats["dashboard_port"] = d.port
+        stats["https_enabled"] = d.httpsEnabled
+        d.jsonResponse(w, stats)</span>
+}
+
+// handleDomains handles GET/POST /api/domains
+func (d *Dashboard) handleDomains(w http.ResponseWriter, r *http.Request) <span class="cov8" title="1">{
+        switch r.Method </span>{
+        case http.MethodGet:<span class="cov8" title="1">
+                // List domains - for now return empty list if no domain manager
+                if d.domainMgr == nil </span><span class="cov8" title="1">{
+                        d.jsonResponse(w, []interface{}{})
+                        return
+                }</span>
+                <span class="cov8" title="1">domains := d.domainMgr.ListDomains("")
+                d.jsonResponse(w, domains)</span>
+
+        case http.MethodPost:<span class="cov8" title="1">
+                var req struct {
+                        Domain    string `json:"domain"`
+                        AccountID string `json:"account_id"`
+                }
+                if err := json.NewDecoder(r.Body).Decode(&amp;req); err != nil </span><span class="cov8" title="1">{
+                        d.jsonError(w, "Invalid request", http.StatusBadRequest)
+                        return
+                }</span>
+
+                <span class="cov8" title="1">if d.domainMgr == nil </span><span class="cov8" title="1">{
+                        d.jsonError(w, "Domain management not available", http.StatusServiceUnavailable)
+                        return
+                }</span>
+
+                <span class="cov8" title="1">domain, err := d.domainMgr.AddDomain(req.Domain, req.AccountID)
+                if err != nil </span><span class="cov8" title="1">{
+                        d.jsonError(w, err.Error(), http.StatusBadRequest)
+                        return
+                }</span>
+
+                <span class="cov8" title="1">d.jsonResponse(w, domain)</span>
+
+        default:<span class="cov8" title="1">
+                d.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)</span>
+        }
+}
+
+// handleDomainActions handles domain-specific actions
+func (d *Dashboard) handleDomainActions(w http.ResponseWriter, r *http.Request) <span class="cov8" title="1">{
+        // Extract domain from path
+        path := strings.TrimPrefix(r.URL.Path, "/api/domains/")
+        parts := strings.Split(path, "/")
+        if len(parts) == 0 </span><span class="cov0" title="0">{
+                d.jsonError(w, "Domain required", http.StatusBadRequest)
+                return
+        }</span>
+        <span class="cov8" title="1">domain := parts[0]
+
+        if d.domainMgr == nil </span><span class="cov8" title="1">{
+                d.jsonError(w, "Domain management not available", http.StatusServiceUnavailable)
+                return
+        }</span>
+
+        <span class="cov8" title="1">switch r.Method </span>{
+        case http.MethodGet:<span class="cov8" title="1">
+                // Get domain details
+                customDomain, err := d.domainMgr.GetDomain(domain)
+                if err != nil </span><span class="cov8" title="1">{
+                        d.jsonError(w, err.Error(), http.StatusNotFound)
+                        return
+                }</span>
+                <span class="cov8" title="1">d.jsonResponse(w, customDomain)</span>
+
+        case http.MethodDelete:<span class="cov8" title="1">
+                // Remove domain
+                err := d.domainMgr.RemoveDomain(domain)
+                if err != nil </span><span class="cov0" title="0">{
+                        d.jsonError(w, err.Error(), http.StatusInternalServerError)
+                        return
+                }</span>
+                <span class="cov8" title="1">w.WriteHeader(http.StatusNoContent)</span>
+
+        default:<span class="cov8" title="1">
+                // Check for action in path
+                if len(parts) &gt; 1 </span><span class="cov8" title="1">{
+                        action := parts[1]
+                        switch action </span>{
+                        case "dns":<span class="cov8" title="1">
+                                // Get DNS records
+                                records, err := d.domainMgr.GetDNSRecords(domain)
+                                if err != nil </span><span class="cov0" title="0">{
+                                        d.jsonError(w, err.Error(), http.StatusInternalServerError)
+                                        return
+                                }</span>
+                                <span class="cov8" title="1">d.jsonResponse(w, records)</span>
+
+                        case "verify":<span class="cov8" title="1">
+                                // Verify domain
+                                err := d.domainMgr.VerifyDomain(domain, nil, nil)
+                                if err != nil </span><span class="cov8" title="1">{
+                                        d.jsonError(w, err.Error(), http.StatusInternalServerError)
+                                        return
+                                }</span>
+                                <span class="cov8" title="1">d.jsonResponse(w, map[string]string{"status": "verified"})</span>
+
+                        default:<span class="cov8" title="1">
+                                d.jsonError(w, "Unknown action", http.StatusBadRequest)</span>
+                        }
+                        <span class="cov8" title="1">return</span>
+                }
+
+                <span class="cov8" title="1">d.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)</span>
+        }
+}
+
+// serveIndex serves the main index.html
+func (d *Dashboard) serveIndex(w http.ResponseWriter, r *http.Request) <span class="cov8" title="1">{
+        w.Header().Set("Content-Type", "text/html; charset=utf-8")
+        w.Write([]byte(indexHTML))
+}</span>
+
+// jsonResponse writes a JSON response
+func (d *Dashboard) jsonResponse(w http.ResponseWriter, data interface{}) <span class="cov8" title="1">{
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(data)
+}</span>
+
+// jsonError writes a JSON error response
+func (d *Dashboard) jsonError(w http.ResponseWriter, message string, code int) <span class="cov8" title="1">{
+        w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(code)
+        json.NewEncoder(w).Encode(map[string]string{"error": message})
+}</span>
+
+// Addr returns the dashboard address.
+func (d *Dashboard) Addr() string <span class="cov8" title="1">{
+        return fmt.Sprintf(":%d", d.port)
+}</span>
+
+// indexHTML is the embedded dashboard HTML
+var indexHTML = `&lt;!DOCTYPE html&gt;
+&lt;html lang="en"&gt;
+&lt;head&gt;
+    &lt;meta charset="UTF-8"&gt;
+    &lt;meta name="viewport" content="width=device-width, initial-scale=1.0"&gt;
+    &lt;title&gt;WireRift Dashboard&lt;/title&gt;
+    &lt;style&gt;
+        :root {
+            --bg-primary: #0f172a;
+            --bg-secondary: #1e293b;
+            --bg-tertiary: #334155;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --accent: #3b82f6;
+            --accent-hover: #2563eb;
+            --success: #22c55e;
+            --warning: #f59e0b;
+            --error: #ef4444;
+            --border: #475569;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+        .container { max-width: 1400px; margin: 0 auto; padding: 2rem; }
+        header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border);
+        }
+        h1 { font-size: 1.875rem; font-weight: 700; }
+        h1 span { color: var(--accent); }
+        .btn {
+            background: var(--accent); color: white; border: none;
+            padding: 0.75rem 1.5rem; border-radius: 0.5rem;
+            cursor: pointer; font-size: 1rem; transition: background 0.2s;
+        }
+        .btn:hover { background: var(--accent-hover); }
+        .btn-outline {
+            background: transparent; border: 1px solid var(--border);
+            color: var(--text-primary); padding: 0.5rem 1rem;
+            border-radius: 0.375rem; cursor: pointer; font-size: 0.875rem;
+        }
+        .btn-outline:hover { background: var(--bg-tertiary); }
+        .stats-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1.5rem; margin-bottom: 2rem;
+        }
+        .stat-card {
+            background: var(--bg-secondary); border-radius: 0.75rem;
+            padding: 1.5rem; border: 1px solid var(--border);
+        }
+        .stat-label { color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 0.5rem; }
+        .stat-value { font-size: 2rem; font-weight: 700; }
+        .stat-value.success { color: var(--success); }
+        .section {
+            background: var(--bg-secondary); border-radius: 0.75rem;
+            padding: 1.5rem; margin-bottom: 2rem; border: 1px solid var(--border);
+        }
+        .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+        .section h2 { font-size: 1.25rem; font-weight: 600; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); }
+        th { color: var(--text-secondary); font-weight: 500; font-size: 0.875rem; }
+        .status-badge {
+            display: inline-block; padding: 0.25rem 0.75rem;
+            border-radius: 9999px; font-size: 0.75rem; font-weight: 500;
+        }
+        .status-badge.active { background: rgba(34, 197, 94, 0.2); color: var(--success); }
+        .overlay {
+            display: none; position: fixed; inset: 0;
+            background: rgba(0, 0, 0, 0.7); justify-content: center;
+            align-items: center; z-index: 100;
+        }
+        .overlay.show { display: flex; }
+        .form-box {
+            background: var(--bg-secondary); padding: 2rem;
+            border-radius: 1rem; width: 100%; max-width: 400px;
+        }
+        .form-box h2 { margin-bottom: 1.5rem; text-align: center; }
+        .form-group { margin-bottom: 1rem; }
+        .form-group label { display: block; margin-bottom: 0.5rem; color: var(--text-secondary); }
+        .form-group input {
+            width: 100%; padding: 0.75rem; background: var(--bg-primary);
+            border: 1px solid var(--border); border-radius: 0.5rem;
+            color: var(--text-primary); font-size: 1rem;
+        }
+        .form-group input:focus { outline: none; border-color: var(--accent); }
+        .error-msg { color: var(--error); font-size: 0.875rem; margin-top: 0.5rem; text-align: center; }
+        .empty-state { text-align: center; padding: 2rem; color: var(--text-secondary); }
+        .mono { font-family: monospace; background: var(--bg-primary); padding: 0.25rem 0.5rem; border-radius: 0.25rem; }
+    &lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+    &lt;div class="container"&gt;
+        &lt;header&gt;
+            &lt;h1&gt;Wire&lt;span&gt;Rift&lt;/span&gt;&lt;/h1&gt;
+            &lt;button class="btn" id="authBtn"&gt;Login&lt;/button&gt;
+        &lt;/header&gt;
+        &lt;div class="stats-grid" id="statsGrid"&gt;
+            &lt;div class="stat-card"&gt;&lt;div class="stat-label"&gt;Active Tunnels&lt;/div&gt;&lt;div class="stat-value" id="tunnelCount"&gt;-&lt;/div&gt;&lt;/div&gt;
+            &lt;div class="stat-card"&gt;&lt;div class="stat-label"&gt;Active Sessions&lt;/div&gt;&lt;div class="stat-value" id="sessionCount"&gt;-&lt;/div&gt;&lt;/div&gt;
+            &lt;div class="stat-card"&gt;&lt;div class="stat-label"&gt;Bytes In&lt;/div&gt;&lt;div class="stat-value" id="bytesIn"&gt;-&lt;/div&gt;&lt;/div&gt;
+            &lt;div class="stat-card"&gt;&lt;div class="stat-label"&gt;Bytes Out&lt;/div&gt;&lt;div class="stat-value" id="bytesOut"&gt;-&lt;/div&gt;&lt;/div&gt;
+        &lt;/div&gt;
+        &lt;div class="section"&gt;
+            &lt;div class="section-header"&gt;
+                &lt;h2&gt;Active Tunnels&lt;/h2&gt;
+                &lt;button class="btn-outline" id="refreshTunnels"&gt;Refresh&lt;/button&gt;
+            &lt;/div&gt;
+            &lt;table id="tunnelsTable"&gt;
+                &lt;thead&gt;&lt;tr&gt;&lt;th&gt;ID&lt;/th&gt;&lt;th&gt;Type&lt;/th&gt;&lt;th&gt;URL / Port&lt;/th&gt;&lt;th&gt;Target&lt;/th&gt;&lt;th&gt;Status&lt;/th&gt;&lt;th&gt;Created&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+                &lt;tbody id="tunnelsBody"&gt;&lt;/tbody&gt;
+            &lt;/table&gt;
+            &lt;div class="empty-state" id="tunnelsEmpty" style="display:none;"&gt;No active tunnels&lt;/div&gt;
+        &lt;/div&gt;
+        &lt;div class="section"&gt;
+            &lt;div class="section-header"&gt;
+                &lt;h2&gt;Connected Sessions&lt;/h2&gt;
+                &lt;button class="btn-outline" id="refreshSessions"&gt;Refresh&lt;/button&gt;
+            &lt;/div&gt;
+            &lt;table id="sessionsTable"&gt;
+                &lt;thead&gt;&lt;tr&gt;&lt;th&gt;ID&lt;/th&gt;&lt;th&gt;Account&lt;/th&gt;&lt;th&gt;Remote Address&lt;/th&gt;&lt;th&gt;Connected&lt;/th&gt;&lt;th&gt;Tunnels&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+                &lt;tbody id="sessionsBody"&gt;&lt;/tbody&gt;
+            &lt;/table&gt;
+            &lt;div class="empty-state" id="sessionsEmpty" style="display:none;"&gt;No connected sessions&lt;/div&gt;
+        &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class="overlay" id="loginOverlay"&gt;
+        &lt;div class="form-box"&gt;
+            &lt;h2&gt;Authentication&lt;/h2&gt;
+            &lt;div class="form-group"&gt;
+                &lt;label for="token"&gt;API Token&lt;/label&gt;
+                &lt;input type="password" id="token" placeholder="Enter your API token"&gt;
+            &lt;/div&gt;
+            &lt;button class="btn" id="loginBtn"&gt;Authenticate&lt;/button&gt;
+            &lt;div class="error-msg" id="loginError"&gt;&lt;/div&gt;
+        &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;script&gt;
+    (function() {
+        let apiToken = '';
+        const $ = id =&gt; document.getElementById(id);
+
+        function showLogin() { $('loginOverlay').classList.add('show'); $('token').focus(); }
+        function hideLogin() { $('loginOverlay').classList.remove('show'); }
+        function logout() { localStorage.removeItem('wirerift_token'); apiToken = ''; location.reload(); }
+
+        function login() {
+            const token = $('token').value.trim();
+            if (!token) { $('loginError').textContent = 'Please enter a token'; return; }
+            apiToken = token;
+            verifyAndLoad();
+        }
+
+        async function verifyAndLoad() {
+            try {
+                const r = await fetch('/api/stats', { headers: { 'Authorization': 'Bearer ' + apiToken } });
+                if (r.ok) {
+                    localStorage.setItem('wirerift_token', apiToken);
+                    hideLogin();
+                    $('authBtn').textContent = 'Logout';
+                    $('authBtn').onclick = logout;
+                    loadAll();
+                    setInterval(loadAll, 5000);
+                } else {
+                    localStorage.removeItem('wirerift_token');
+                    $('loginError').textContent = 'Invalid token';
+                    showLogin();
+                }
+            } catch (e) { $('loginError').textContent = 'Connection failed'; showLogin(); }
+        }
+
+        async function apiFetch(path) {
+            const r = await fetch(path, { headers: { 'Authorization': 'Bearer ' + apiToken } });
+            if (!r.ok) throw new Error('API error');
+            return r.json();
+        }
+
+        async function loadAll() { loadStats(); loadTunnels(); loadSessions(); }
+
+        async function loadStats() {
+            try {
+                const s = await apiFetch('/api/stats');
+                $('tunnelCount').textContent = s.active_tunnels || 0;
+                $('sessionCount').textContent = s.active_sessions || 0;
+                $('bytesIn').textContent = fmtBytes(s.bytes_in || 0);
+                $('bytesOut').textContent = fmtBytes(s.bytes_out || 0);
+            } catch (e) { console.error('Stats:', e); }
+        }
+
+        async function loadTunnels() {
+            try {
+                const tunnels = await apiFetch('/api/tunnels');
+                const tbody = $('tunnelsBody');
+                const empty = $('tunnelsEmpty');
+                tbody.textContent = '';
+                if (!tunnels || tunnels.length === 0) { empty.style.display = 'block'; return; }
+                empty.style.display = 'none';
+                tunnels.forEach(t =&gt; {
+                    const tr = document.createElement('tr');
+                    tr.appendChild(cell(t.id, 'code'));
+                    tr.appendChild(cell(t.type));
+                    tr.appendChild(cell(t.type === 'http' ? t.url : 'Port ' + t.port, 'mono'));
+                    tr.appendChild(cell(t.target || 'localhost:' + t.local_port));
+                    tr.appendChild(statusCell('Active', 'active'));
+                    tr.appendChild(cell(fmtTime(t.created_at)));
+                    tbody.appendChild(tr);
+                });
+            } catch (e) { console.error('Tunnels:', e); }
+        }
+
+        async function loadSessions() {
+            try {
+                const sessions = await apiFetch('/api/sessions');
+                const tbody = $('sessionsBody');
+                const empty = $('sessionsEmpty');
+                tbody.textContent = '';
+                if (!sessions || sessions.length === 0) { empty.style.display = 'block'; return; }
+                empty.style.display = 'none';
+                sessions.forEach(s =&gt; {
+                    const tr = document.createElement('tr');
+                    tr.appendChild(cell(s.id, 'code'));
+                    tr.appendChild(cell(s.account_id || 'dev'));
+                    tr.appendChild(cell(s.remote_addr || '-'));
+                    tr.appendChild(cell(fmtTime(s.connected_at)));
+                    tr.appendChild(cell(s.tunnel_count || 0));
+                    tbody.appendChild(tr);
+                });
+            } catch (e) { console.error('Sessions:', e); }
+        }
+
+        function cell(text, cls) {
+            const td = document.createElement('td');
+            if (cls) { const el = document.createElement(cls); el.textContent = text; td.appendChild(el); }
+            else { td.textContent = text; }
+            return td;
+        }
+
+        function statusCell(text, status) {
+            const td = document.createElement('td');
+            const span = document.createElement('span');
+            span.className = 'status-badge ' + status;
+            span.textContent = text;
+            td.appendChild(span);
+            return td;
+        }
+
+        function fmtBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024, sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return (bytes / Math.pow(k, i)).toFixed(1) + ' ' + sizes[i];
+        }
+
+        function fmtTime(t) { return t ? new Date(t).toLocaleString() : '-'; }
+
+        // Event listeners
+        $('authBtn').onclick = showLogin;
+        $('loginBtn').onclick = login;
+        $('refreshTunnels').onclick = loadTunnels;
+        $('refreshSessions').onclick = loadSessions;
+        $('token').addEventListener('keypress', e =&gt; { if (e.key === 'Enter') login(); });
+
+        // Init
+        const saved = localStorage.getItem('wirerift_token');
+        if (saved) { apiToken = saved; verifyAndLoad(); } else { showLogin(); }
+    })();
+    &lt;/script&gt;
+&lt;/body&gt;
+&lt;/html&gt;`
+</pre>
+		
+		</div>
+	</body>
+	<script>
+	(function() {
+		var files = document.getElementById('files');
+		var visible;
+		files.addEventListener('change', onChange, false);
+		function select(part) {
+			if (visible)
+				visible.style.display = 'none';
+			visible = document.getElementById(part);
+			if (!visible)
+				return;
+			files.value = part;
+			visible.style.display = 'block';
+			location.hash = part;
+		}
+		function onChange() {
+			select(files.value);
+			window.scrollTo(0, 0);
+		}
+		if (location.hash != "") {
+			select(location.hash.substr(1));
+		}
+		if (!visible) {
+			select("file0");
+		}
+	})();
+	</script>
+</html>

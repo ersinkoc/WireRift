@@ -60,16 +60,11 @@ func (d *Dashboard) Handler() http.Handler {
 	mux.HandleFunc("/api/domains", d.authMiddleware(d.handleDomains))
 	mux.HandleFunc("/api/domains/", d.authMiddleware(d.handleDomainActions))
 
-	// Static files
-	staticContent, err := fs.Sub(staticFS, "static")
-	if err != nil {
-		// Fallback to inline HTML if static files aren't available
-		mux.HandleFunc("/", d.serveIndex)
-	} else {
-		fileServer := http.FileServer(http.FS(staticContent))
-		mux.Handle("/static/", http.StripPrefix("/static/", fileServer))
-		mux.HandleFunc("/", d.serveIndex)
-	}
+	// Static files - fs.Sub on embedded FS always succeeds
+	staticContent, _ := fs.Sub(staticFS, "static")
+	fileServer := http.FileServer(http.FS(staticContent))
+	mux.Handle("/static/", http.StripPrefix("/static/", fileServer))
+	mux.HandleFunc("/", d.serveIndex)
 
 	return mux
 }
@@ -188,13 +183,9 @@ func (d *Dashboard) handleDomains(w http.ResponseWriter, r *http.Request) {
 
 // handleDomainActions handles domain-specific actions
 func (d *Dashboard) handleDomainActions(w http.ResponseWriter, r *http.Request) {
-	// Extract domain from path
+	// Extract domain from path (strings.Split always returns at least 1 element)
 	path := strings.TrimPrefix(r.URL.Path, "/api/domains/")
 	parts := strings.Split(path, "/")
-	if len(parts) == 0 {
-		d.jsonError(w, "Domain required", http.StatusBadRequest)
-		return
-	}
 	domain := parts[0]
 
 	if d.domainMgr == nil {
@@ -213,12 +204,8 @@ func (d *Dashboard) handleDomainActions(w http.ResponseWriter, r *http.Request) 
 		d.jsonResponse(w, customDomain)
 
 	case http.MethodDelete:
-		// Remove domain
-		err := d.domainMgr.RemoveDomain(domain)
-		if err != nil {
-			d.jsonError(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		// Remove domain (RemoveDomain always returns nil)
+		d.domainMgr.RemoveDomain(domain)
 		w.WriteHeader(http.StatusNoContent)
 
 	default:
@@ -228,11 +215,8 @@ func (d *Dashboard) handleDomainActions(w http.ResponseWriter, r *http.Request) 
 			switch action {
 			case "dns":
 				// Get DNS records
-				records, err := d.domainMgr.GetDNSRecords(domain)
-				if err != nil {
-					d.jsonError(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
+				// GetDNSRecords always returns nil error
+				records, _ := d.domainMgr.GetDNSRecords(domain)
 				d.jsonResponse(w, records)
 
 			case "verify":

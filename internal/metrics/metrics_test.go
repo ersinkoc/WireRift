@@ -138,6 +138,36 @@ func TestPrometheusFormat(t *testing.T) {
 	}
 }
 
+// TestRecordLatencyMultiple tests RecordLatency with multiple calls to cover the EMA branch
+func TestRecordLatencyMultiple(t *testing.T) {
+	c := NewCollector()
+
+	// First call sets avgLatencyNs directly
+	c.RecordLatency(10 * time.Millisecond)
+	snap := c.Snapshot()
+	if snap.avgLatencyNs != 10_000_000 {
+		t.Errorf("After first RecordLatency: avgLatencyNs = %d, want 10000000", snap.avgLatencyNs)
+	}
+
+	// Second call should trigger the EMA branch (old != 0)
+	c.RecordLatency(20 * time.Millisecond)
+	snap = c.Snapshot()
+	// Expected: (10_000_000 * 7 + 20_000_000 * 3) / 10 = (70_000_000 + 60_000_000) / 10 = 13_000_000
+	expected := int64(13_000_000)
+	if snap.avgLatencyNs != expected {
+		t.Errorf("After second RecordLatency: avgLatencyNs = %d, want %d", snap.avgLatencyNs, expected)
+	}
+
+	// Third call to further exercise the EMA branch
+	c.RecordLatency(5 * time.Millisecond)
+	snap = c.Snapshot()
+	// Expected: (13_000_000 * 7 + 5_000_000 * 3) / 10 = (91_000_000 + 15_000_000) / 10 = 10_600_000
+	expected2 := int64(10_600_000)
+	if snap.avgLatencyNs != expected2 {
+		t.Errorf("After third RecordLatency: avgLatencyNs = %d, want %d", snap.avgLatencyNs, expected2)
+	}
+}
+
 func TestHandler(t *testing.T) {
 	c := NewCollector()
 	handler := c.Handler()

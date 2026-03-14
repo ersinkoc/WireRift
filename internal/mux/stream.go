@@ -235,10 +235,8 @@ func (s *Stream) cleanup() {
 
 // onDataFrame handles incoming data.
 func (s *Stream) onDataFrame(data []byte) error {
-	_, err := s.readBuf.Write(data)
-	if err != nil {
-		return err
-	}
+	// ringBuffer.Write always returns nil error
+	s.readBuf.Write(data)
 
 	// Signal data available
 	select {

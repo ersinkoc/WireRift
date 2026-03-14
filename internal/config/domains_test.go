@@ -145,6 +145,88 @@ func TestDomainManagerGetDNSRecords(t *testing.T) {
 	}
 }
 
+// TestNewDomainManagerEmptyBaseDomain tests NewDomainManager with empty baseDomain
+func TestNewDomainManagerEmptyBaseDomain(t *testing.T) {
+	m := NewDomainManager("")
+
+	// Should default to "wirerift.dev"
+	records, _ := m.GetDNSRecords("test.example.com")
+	if records[0].Value != "wirerift.dev" {
+		t.Errorf("baseDomain should default to wirerift.dev, got CNAME value %q", records[0].Value)
+	}
+}
+
+// TestVerifyDomainNotFound tests VerifyDomain on a nonexistent domain
+func TestVerifyDomainNotFound(t *testing.T) {
+	m := NewDomainManager("wirerift.dev")
+
+	err := m.VerifyDomain("nonexistent.com", []byte("cert"), []byte("key"))
+	if err != ErrDomainNotFound {
+		t.Errorf("Error = %v, want %v", err, ErrDomainNotFound)
+	}
+}
+
+// TestSetTunnelNotFound tests SetTunnel on a nonexistent domain
+func TestSetTunnelNotFound(t *testing.T) {
+	m := NewDomainManager("wirerift.dev")
+
+	err := m.SetTunnel("nonexistent.com", "tun_123")
+	if err != ErrDomainNotFound {
+		t.Errorf("Error = %v, want %v", err, ErrDomainNotFound)
+	}
+}
+
+// TestIsValidDomainEdgeCases tests isValidDomain with edge cases
+func TestIsValidDomainEdgeCases(t *testing.T) {
+	// Domain ending with dot
+	if isValidDomain("example.com.") {
+		t.Error("isValidDomain(\"example.com.\") = true, want false")
+	}
+
+	// Domain starting with dot
+	if isValidDomain(".example.com") {
+		t.Error("isValidDomain(\".example.com\") = true, want false")
+	}
+
+	// Domain too long (>253 chars)
+	longDomain := ""
+	for i := 0; i < 254; i++ {
+		longDomain += "a"
+	}
+	if isValidDomain(longDomain) {
+		t.Error("isValidDomain(long domain >253) = true, want false")
+	}
+
+	// Domain with invalid character
+	if isValidDomain("example!.com") {
+		t.Error("isValidDomain(\"example!.com\") = true, want false")
+	}
+}
+
+// TestAddDomainInvalid tests AddDomain with an invalid domain
+func TestAddDomainInvalid(t *testing.T) {
+	m := NewDomainManager("wirerift.dev")
+
+	// Domain starting with dot
+	_, err := m.AddDomain(".invalid.com", "acc_123")
+	if err != ErrInvalidDomain {
+		t.Errorf("Error = %v, want %v", err, ErrInvalidDomain)
+	}
+}
+
+// TestMinFunction tests the min helper function
+func TestMinFunction(t *testing.T) {
+	if min(3, 5) != 3 {
+		t.Errorf("min(3, 5) = %d, want 3", min(3, 5))
+	}
+	if min(5, 3) != 3 {
+		t.Errorf("min(5, 3) = %d, want 3", min(5, 3))
+	}
+	if min(3, 3) != 3 {
+		t.Errorf("min(3, 3) = %d, want 3", min(3, 3))
+	}
+}
+
 func TestIsValidDomain(t *testing.T) {
 	tests := []struct {
 		domain   string

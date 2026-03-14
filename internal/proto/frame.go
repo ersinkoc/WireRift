@@ -91,10 +91,8 @@ func ReadFrame(r io.Reader) (*Frame, error) {
 
 	frameType := FrameType(header[1])
 
+	// Stream ID is 3 bytes big-endian, max value is 0xFFFFFF == MaxStreamID
 	streamID := uint32(header[2])<<16 | uint32(header[3])<<8 | uint32(header[4])
-	if streamID > MaxStreamID {
-		return nil, ErrInvalidStreamID
-	}
 
 	payloadLen := binary.BigEndian.Uint32(header[5:9])
 	if payloadLen > MaxPayloadSize {

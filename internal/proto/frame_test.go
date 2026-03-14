@@ -341,6 +341,85 @@ func TestReadMagicInsufficientData(t *testing.T) {
 	}
 }
 
+// errWriter is a writer that fails after writing a specified number of bytes.
+type errWriter struct {
+	failAfter int // fail after this many bytes
+	written   int
+}
+
+func (ew *errWriter) Write(p []byte) (int, error) {
+	if ew.written+len(p) > ew.failAfter {
+		// Allow partial write up to failAfter
+		n := ew.failAfter - ew.written
+		if n <= 0 {
+			return 0, errors.New("write error")
+		}
+		ew.written += n
+		return n, errors.New("write error")
+	}
+	ew.written += len(p)
+	return len(p), nil
+}
+
+// TestEncodeHeaderWriteError tests Encode when the header write fails
+func TestEncodeHeaderWriteError(t *testing.T) {
+	frame := &Frame{
+		Version:  Version,
+		Type:     FrameStreamData,
+		StreamID: 1,
+		Payload:  []byte("hello"),
+	}
+
+	// Writer that fails immediately
+	w := &errWriter{failAfter: 0}
+	err := frame.Encode(w)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// TestEncodePayloadWriteError tests Encode when the payload write fails
+func TestEncodePayloadWriteError(t *testing.T) {
+	frame := &Frame{
+		Version:  Version,
+		Type:     FrameStreamData,
+		StreamID: 1,
+		Payload:  []byte("hello"),
+	}
+
+	// Writer that succeeds on header (9 bytes) but fails on payload
+	w := &errWriter{failAfter: HeaderSize}
+	err := frame.Encode(w)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// TestReadFramePayloadReadError tests ReadFrame with truncated payload
+func TestReadFramePayloadReadError(t *testing.T) {
+	// Build a valid header that says payload is 10 bytes, but only provide 5 bytes of payload
+	header := make([]byte, HeaderSize)
+	header[0] = Version
+	header[1] = byte(FrameStreamData)
+	header[2] = 0 // streamID high
+	header[3] = 0 // streamID mid
+	header[4] = 1 // streamID low
+	// Payload length = 10
+	header[5] = 0
+	header[6] = 0
+	header[7] = 0
+	header[8] = 10
+
+	// Only 5 bytes of payload
+	data := append(header, make([]byte, 5)...)
+	buf := bytes.NewReader(data)
+
+	_, err := ReadFrame(buf)
+	if err == nil {
+		t.Fatal("expected error for truncated payload, got nil")
+	}
+}
+
 // TestReadMagicPartialInvalid tests ReadMagic with partially invalid magic
 func TestReadMagicPartialInvalid(t *testing.T) {
 	// First two bytes correct, last two wrong

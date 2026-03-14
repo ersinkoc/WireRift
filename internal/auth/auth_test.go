@@ -226,6 +226,97 @@ func TestMiddlewareInvalidAuthHeader(t *testing.T) {
 	}
 }
 
+// TestValidateTokenExpiredInStore tests validation of a token found in the store that is expired
+func TestValidateTokenExpiredInStore(t *testing.T) {
+	m := NewManager()
+
+	// Create account
+	account, _ := m.CreateAccount("test@example.com", "Test User")
+
+	// Manually store an expired token
+	expiredToken := &Token{
+		ID:        "tk_expired",
+		AccountID: account.ID,
+		Name:      "Expired Token",
+		CreatedAt: time.Now().Add(-2 * time.Hour),
+		ExpiresAt: time.Now().Add(-1 * time.Hour),
+		Secret:    "sk_expired_secret_12345",
+	}
+	m.tokens.Store(expiredToken.ID, expiredToken)
+
+	// Validate should return ErrInvalidToken because the token is expired
+	_, _, err := m.ValidateToken(expiredToken.Secret)
+	if err != ErrInvalidToken {
+		t.Errorf("Error = %v, want %v", err, ErrInvalidToken)
+	}
+}
+
+// TestValidateTokenAccountNotFound tests validation of a token whose account doesn't exist
+func TestValidateTokenAccountNotFound(t *testing.T) {
+	m := NewManager()
+
+	// Store a token with an account ID that doesn't exist
+	orphanToken := &Token{
+		ID:        "tk_orphan",
+		AccountID: "nonexistent_account",
+		Name:      "Orphan Token",
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(1 * time.Hour),
+		Secret:    "sk_orphan_secret_12345",
+	}
+	m.tokens.Store(orphanToken.ID, orphanToken)
+
+	// Validate should return ErrInvalidToken because the account is not found
+	_, _, err := m.ValidateToken(orphanToken.Secret)
+	if err != ErrInvalidToken {
+		t.Errorf("Error = %v, want %v", err, ErrInvalidToken)
+	}
+}
+
+// TestCreateTokenInactiveAccount tests creating a token for an inactive account
+func TestCreateTokenInactiveAccount(t *testing.T) {
+	m := NewManager()
+
+	// Create account and then deactivate it
+	account, _ := m.CreateAccount("test@example.com", "Test User")
+	account.Active = false
+
+	// Try to create token for inactive account
+	_, err := m.CreateToken(account.ID, "Test Token", 1*time.Hour)
+	if err != ErrUnauthorized {
+		t.Errorf("Error = %v, want %v", err, ErrUnauthorized)
+	}
+}
+
+// TestDevTokenNil tests DevToken when devToken is nil
+func TestDevTokenNil(t *testing.T) {
+	m := &Manager{} // Create manager without calling NewManager, so devToken is nil
+
+	token := m.DevToken()
+	if token != "" {
+		t.Errorf("DevToken() = %q, want empty string", token)
+	}
+}
+
+// TestBasicAuthNonBasicPrefix tests BasicAuth with a non-Basic authorization prefix
+func TestBasicAuthNonBasicPrefix(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := BasicAuth("admin", "secret")
+	protected := middleware(handler)
+
+	// Test with Bearer prefix instead of Basic
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer sometoken")
+	rec := httptest.NewRecorder()
+	protected.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("Code = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
 // TestBasicAuthInvalidHeader tests BasicAuth with various invalid headers
 func TestBasicAuthInvalidHeader(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

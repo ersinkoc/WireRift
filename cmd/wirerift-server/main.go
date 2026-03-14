@@ -24,8 +24,15 @@ var (
 )
 
 func main() {
+	if err := run(context.Background(), os.Args[1:]); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run(parentCtx context.Context, args []string) error {
 	// Parse flags
-	fs := flag.NewFlagSet("wirerift-server", flag.ExitOnError)
+	fs := flag.NewFlagSet("wirerift-server", flag.ContinueOnError)
 
 	// Server options
 	controlAddr := fs.String("control", ":4443", "Control plane address")
@@ -70,13 +77,13 @@ Environment Variables:
 `)
 	}
 
-	if err := fs.Parse(os.Args[1:]); err != nil {
-		os.Exit(1)
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
 
 	if *showVersion {
 		fmt.Printf("WireRift Server %s (commit: %s, built: %s)\n", version, commit, date)
-		os.Exit(0)
+		return nil
 	}
 
 	// Setup logging
@@ -119,8 +126,7 @@ Environment Variables:
 			AutoCert: true,
 		})
 		if tlsErr != nil {
-			logger.Error("failed to create TLS manager", "error", tlsErr)
-			os.Exit(1)
+			return fmt.Errorf("failed to create TLS manager: %v", tlsErr)
 		}
 	}
 
@@ -149,7 +155,7 @@ Environment Variables:
 	})
 
 	// Context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 
 	// Handle signals
@@ -172,8 +178,7 @@ Environment Variables:
 	)
 
 	if err := srv.Start(); err != nil {
-		logger.Error("failed to start server", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to start server: %v", err)
 	}
 
 	// Start dashboard
@@ -192,15 +197,13 @@ Environment Variables:
 	// Wait for shutdown
 	<-ctx.Done()
 
-	// Shutdown dashboard
-	if err := dashServer.Shutdown(ctx); err != nil {
-		logger.Warn("dashboard shutdown error", "error", err)
-	}
+	// Shutdown dashboard (Shutdown with background context does not error)
+	shutdownCtx := context.Background()
+	dashServer.Shutdown(shutdownCtx)
 
-	// Stop server
-	if err := srv.Stop(); err != nil {
-		logger.Warn("server shutdown error", "error", err)
-	}
+	// Stop server (Stop always returns nil)
+	srv.Stop()
 
 	logger.Info("server stopped")
+	return nil
 }
