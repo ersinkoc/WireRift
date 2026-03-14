@@ -383,3 +383,200 @@ func TestHTTPOptionFunctions(t *testing.T) {
 		})
 	}
 }
+
+// TestConnectFailure tests connection failures
+func TestConnectFailure(t *testing.T) {
+	tests := []struct {
+		name    string
+		server  string
+		wantErr bool
+	}{
+		{
+			name:    "invalid address",
+			server:  "127.0.0.1:1",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.ServerAddr = tt.server
+			cfg.Reconnect = false
+
+			c := New(cfg, nil)
+			err := c.Connect()
+
+			if tt.wantErr && err == nil {
+				t.Error("Expected error but got none")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+			c.Close()
+		})
+	}
+}
+
+// TestClientStateTransitions tests client state management
+func TestClientStateTransitions(t *testing.T) {
+	c := New(DefaultConfig(), nil)
+
+	// Initially not connected
+	if c.IsConnected() {
+		t.Error("Should not be connected initially")
+	}
+	if c.SessionID() != "" {
+		t.Error("SessionID should be empty initially")
+	}
+
+	// Close without connect should not panic
+	if err := c.Close(); err != nil {
+		t.Errorf("Close without connect failed: %v", err)
+	}
+
+	// Should still not be connected
+	if c.IsConnected() {
+		t.Error("Should not be connected after close")
+	}
+}
+
+// TestClientMultipleClose tests that multiple Close calls are safe
+func TestClientMultipleClose(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Reconnect = false
+	c := New(cfg, nil)
+
+	// Multiple closes should be safe
+	for i := 0; i < 5; i++ {
+		if err := c.Close(); err != nil {
+			t.Errorf("Close %d failed: %v", i+1, err)
+		}
+	}
+}
+
+// TestHTTPTunnelNotConnected tests HTTP tunnel creation when not connected
+func TestHTTPTunnelNotConnected(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Reconnect = false
+	c := New(cfg, nil)
+
+	_, err := c.HTTP("localhost:3000")
+	if err != ErrNotConnected {
+		t.Errorf("Expected ErrNotConnected, got %v", err)
+	}
+}
+
+// TestTCPTunnelNotConnected tests TCP tunnel creation when not connected
+func TestTCPTunnelNotConnected(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Reconnect = false
+	c := New(cfg, nil)
+
+	_, err := c.TCP("localhost:3000", 0)
+	if err != ErrNotConnected {
+		t.Errorf("Expected ErrNotConnected, got %v", err)
+	}
+}
+
+// TestTunnelCloseWhenClientClosed tests closing tunnel after client is closed
+func TestTunnelCloseWhenClientClosed(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Reconnect = false
+	c := New(cfg, nil)
+
+	tunnel := &Tunnel{
+		ID:        "test-tunnel",
+		client:    c,
+		LocalAddr: "localhost:3000",
+	}
+
+	// Close client first
+	c.Close()
+
+	// Now close tunnel - should handle gracefully
+	err := tunnel.Close()
+	if err != nil && err != ErrNotConnected {
+		t.Errorf("Close failed unexpectedly: %v", err)
+	}
+}
+
+// TestConfigVariations tests various config combinations
+func TestConfigVariations(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  func() Config
+	}{
+		{
+			name: "no reconnect",
+			cfg: func() Config {
+				c := DefaultConfig()
+				c.Reconnect = false
+				return c
+			},
+		},
+		{
+			name: "custom intervals",
+			cfg: func() Config {
+				c := DefaultConfig()
+				c.ReconnectInterval = 500 * time.Millisecond
+				c.MaxReconnectInterval = 10 * time.Second
+				c.HeartbeatInterval = 5 * time.Second
+				return c
+			},
+		},
+		{
+			name: "with token",
+			cfg: func() Config {
+				c := DefaultConfig()
+				c.Token = "test-token"
+				return c
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tt.cfg()
+			c := New(cfg, nil)
+			if c == nil {
+				t.Fatal("Client should not be nil")
+			}
+			if c.config.Reconnect != cfg.Reconnect {
+				t.Error("Reconnect config not preserved")
+			}
+			c.Close()
+		})
+	}
+}
+
+// TestClientWithAllOptions tests client with all options set
+func TestClientWithAllOptions(t *testing.T) {
+	cfg := Config{
+		ServerAddr:           "custom.server:1234",
+		Token:                "my-token",
+		TLSConfig:            &tls.Config{InsecureSkipVerify: true},
+		Reconnect:            true,
+		ReconnectInterval:    2 * time.Second,
+		MaxReconnectInterval: 60 * time.Second,
+		HeartbeatInterval:    15 * time.Second,
+	}
+
+	c := New(cfg, nil)
+	if c.config.ServerAddr != "custom.server:1234" {
+		t.Error("ServerAddr not set correctly")
+	}
+	if c.config.Token != "my-token" {
+		t.Error("Token not set correctly")
+	}
+	if c.config.ReconnectInterval != 2*time.Second {
+		t.Error("ReconnectInterval not set correctly")
+	}
+	if c.config.MaxReconnectInterval != 60*time.Second {
+		t.Error("MaxReconnectInterval not set correctly")
+	}
+	if c.config.HeartbeatInterval != 15*time.Second {
+		t.Error("HeartbeatInterval not set correctly")
+	}
+	c.Close()
+}
