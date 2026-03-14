@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -654,5 +655,90 @@ func TestHandleDomainsPostSuccess(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// TestHandleTunnelsMethodNotAllowed tests tunnels endpoint with unsupported method
+func TestHandleTunnelsMethodNotAllowed(t *testing.T) {
+	authMgr := auth.NewManager()
+	srv := server.New(server.DefaultConfig(), nil)
+
+	d := New(Config{
+		Server:      srv,
+		AuthManager: authMgr,
+	})
+
+	handler := d.Handler()
+
+	// POST /api/tunnels (not allowed)
+	req := httptest.NewRequest("POST", "/api/tunnels", nil)
+	req.Header.Set("Authorization", "Bearer "+authMgr.DevToken())
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+// TestHandleSessionsMethodNotAllowed tests sessions endpoint with unsupported method
+func TestHandleSessionsMethodNotAllowed(t *testing.T) {
+	authMgr := auth.NewManager()
+	srv := server.New(server.DefaultConfig(), nil)
+
+	d := New(Config{
+		Server:      srv,
+		AuthManager: authMgr,
+	})
+
+	handler := d.Handler()
+
+	// POST /api/sessions (not allowed)
+	req := httptest.NewRequest("POST", "/api/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+authMgr.DevToken())
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+// TestHandleStatsWithData tests stats endpoint with actual server data
+func TestHandleStatsWithData(t *testing.T) {
+	authMgr := auth.NewManager()
+	srv := server.New(server.DefaultConfig(), nil)
+
+	d := New(Config{
+		Server:      srv,
+		AuthManager: authMgr,
+	})
+
+	handler := d.Handler()
+
+	req := httptest.NewRequest("GET", "/api/stats", nil)
+	req.Header.Set("Authorization", "Bearer "+authMgr.DevToken())
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	// Parse response
+	var stats map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&stats); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	// Should have uptime, active_tunnels, and active_sessions
+	if _, ok := stats["uptime"]; !ok {
+		t.Error("Response should contain uptime")
+	}
+	if _, ok := stats["active_tunnels"]; !ok {
+		t.Error("Response should contain active_tunnels")
+	}
+	if _, ok := stats["active_sessions"]; !ok {
+		t.Error("Response should contain active_sessions")
 	}
 }
