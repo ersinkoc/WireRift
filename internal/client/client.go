@@ -314,6 +314,10 @@ func (c *Client) openTunnel(req *proto.TunnelRequest) (*Tunnel, error) {
 
 // CloseTunnel closes a tunnel.
 func (c *Client) CloseTunnel(id string) error {
+	if c.mux == nil {
+		return ErrNotConnected
+	}
+
 	closeReq := &proto.TunnelClose{TunnelID: id}
 	frame, err := proto.EncodeJSONPayload(proto.FrameTunnelClose, proto.ControlStreamID, closeReq)
 	if err != nil {
@@ -342,11 +346,17 @@ func (c *Client) IsConnected() bool {
 
 // FrameWriter returns the frame writer (for internal use).
 func (c *Client) FrameWriter() *proto.FrameWriter {
+	if c.mux == nil {
+		return nil
+	}
 	return c.mux.GetFrameWriter()
 }
 
 // FrameReader returns the frame reader (for internal use).
 func (c *Client) FrameReader() *proto.FrameReader {
+	if c.mux == nil {
+		return nil
+	}
 	return c.mux.GetFrameReader()
 }
 

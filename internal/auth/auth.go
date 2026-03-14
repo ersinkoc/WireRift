@@ -144,6 +144,14 @@ func (m *Manager) CreateToken(accountID, name string, expiresIn time.Duration) (
 	return token, nil
 }
 
+// DevToken returns the development token secret for testing.
+func (m *Manager) DevToken() string {
+	if m.devToken != nil {
+		return m.devToken.Secret
+	}
+	return ""
+}
+
 // RevokeToken revokes a token.
 func (m *Manager) RevokeToken(tokenID string) error {
 	m.mu.Lock()

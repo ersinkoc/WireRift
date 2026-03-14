@@ -1,6 +1,7 @@
 package client
 
 import (
+	"log/slog"
 	"testing"
 
 	"github.com/wirerift/wirerift/internal/proto"
@@ -75,5 +76,126 @@ func TestIsConnected(t *testing.T) {
 
 	if c.IsConnected() {
 		t.Error("Should not be connected initially")
+	}
+}
+
+func TestSessionID(t *testing.T) {
+	c := New(DefaultConfig(), nil)
+
+	// Session ID should be empty before connecting
+	if c.SessionID() != "" {
+		t.Error("SessionID should be empty before connecting")
+	}
+}
+
+func TestCloseIdempotent(t *testing.T) {
+	c := New(DefaultConfig(), nil)
+
+	// Multiple closes should not panic
+	if err := c.Close(); err != nil {
+		t.Errorf("First close failed: %v", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Errorf("Second close failed: %v", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Errorf("Third close failed: %v", err)
+	}
+}
+
+func TestHTTPNotConnected(t *testing.T) {
+	c := New(DefaultConfig(), nil)
+
+	// Should fail when not connected
+	_, err := c.HTTP("localhost:3000")
+	if err != ErrNotConnected {
+		t.Errorf("Expected ErrNotConnected, got %v", err)
+	}
+}
+
+func TestTCPNotConnected(t *testing.T) {
+	c := New(DefaultConfig(), nil)
+
+	// Should fail when not connected
+	_, err := c.TCP("localhost:3000", 8080)
+	if err != ErrNotConnected {
+		t.Errorf("Expected ErrNotConnected, got %v", err)
+	}
+}
+
+func TestCloseTunnelNotConnected(t *testing.T) {
+	c := New(DefaultConfig(), nil)
+
+	// Should return ErrNotConnected when mux is nil
+	err := c.CloseTunnel("test-id")
+	if err != ErrNotConnected {
+		t.Errorf("Expected ErrNotConnected, got %v", err)
+	}
+}
+
+func TestTunnelGetters(t *testing.T) {
+	tunnel := &Tunnel{
+		ID:        "test-id",
+		PublicURL: "https://test.wirerift.dev",
+		LocalAddr: "localhost:3000",
+	}
+
+	if tunnel.GetPublicURL() != "https://test.wirerift.dev" {
+		t.Errorf("GetPublicURL = %q, want %q", tunnel.GetPublicURL(), "https://test.wirerift.dev")
+	}
+	if tunnel.GetLocalAddr() != "localhost:3000" {
+		t.Errorf("GetLocalAddr = %q, want %q", tunnel.GetLocalAddr(), "localhost:3000")
+	}
+}
+
+func TestClientWithCustomLogger(t *testing.T) {
+	logger := slog.Default()
+	c := New(DefaultConfig(), logger)
+
+	if c == nil {
+		t.Fatal("New returned nil")
+	}
+	if c.logger != logger {
+		t.Error("Logger not set correctly")
+	}
+}
+
+func TestClientWithNilLogger(t *testing.T) {
+	c := New(DefaultConfig(), nil)
+
+	if c == nil {
+		t.Fatal("New returned nil")
+	}
+	if c.logger == nil {
+		t.Error("Logger should be set to default when nil is passed")
+	}
+}
+
+func TestClientFrameWriterReaderBeforeConnect(t *testing.T) {
+	c := New(DefaultConfig(), nil)
+
+	// Should not panic but will be nil before connect
+	if c.FrameWriter() != nil {
+		t.Error("FrameWriter should be nil before connect")
+	}
+	if c.FrameReader() != nil {
+		t.Error("FrameReader should be nil before connect")
+	}
+}
+
+func TestConfigDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+
+	if cfg.ServerAddr == "" {
+		t.Error("ServerAddr should not be empty")
+	}
+	if !cfg.Reconnect {
+		t.Error("Reconnect should be true by default")
+	}
+	if cfg.HeartbeatInterval <= 0 {
+		t.Error("HeartbeatInterval should be positive")
+	}
+	if cfg.MaxReconnectInterval <= 0 {
+		t.Error("MaxReconnectInterval should be positive")
 	}
 }

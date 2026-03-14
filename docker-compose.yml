@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  wirerift-server:
+    build: .
+    image: wirerift-server:latest
+    container_name: wirerift-server
+    ports:
+      - "4443:4443"   # Control plane
+      - "80:80"         # HTTP edge
+      - "443:443"       # HTTPS edge
+      - "4040:4040"     # Dashboard
+    environment:
+      - WIRERIFT_DOMAIN=localtunnel.dev
+    volumes:
+      - certs:/app/certs
+    restart: unless-stopped
+
+  # Example web service to tunnel
+  webapp:
+    image: nginx:alpine
+    container_name: wirerift-webapp
+    ports:
+      - "8080:80"
+
+volumes:
+  certs:

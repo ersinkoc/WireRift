@@ -3,6 +3,7 @@ package dashboard
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/wirerift/wirerift/internal/auth"
@@ -123,5 +124,284 @@ func TestIndexHTML(t *testing.T) {
 	contentType := rec.Header().Get("Content-Type")
 	if contentType != "text/html; charset=utf-8" {
 		t.Errorf("Content-Type = %q, want %q", contentType, "text/html; charset=utf-8")
+	}
+}
+
+func TestAuthMiddlewareWithValidToken(t *testing.T) {
+	authMgr := auth.NewManager()
+	srv := server.New(server.DefaultConfig(), nil)
+
+	d := New(Config{
+		Server:      srv,
+		AuthManager: authMgr,
+	})
+
+	handler := d.Handler()
+
+	// Test with valid dev token
+	req := httptest.NewRequest("GET", "/api/tunnels", nil)
+	req.Header.Set("Authorization", "Bearer "+authMgr.DevToken())
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Status with valid token = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestAuthMiddlewareWithSessionCookie(t *testing.T) {
+	authMgr := auth.NewManager()
+	srv := server.New(server.DefaultConfig(), nil)
+
+	d := New(Config{
+		Server:      srv,
+		AuthManager: authMgr,
+	})
+
+	handler := d.Handler()
+
+	// Test with session cookie using dev token
+	req := httptest.NewRequest("GET", "/api/tunnels", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  "wirerift_session",
+		Value: authMgr.DevToken(),
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Status with session cookie = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestAuthMiddlewareWithInvalidAuthorizationHeader(t *testing.T) {
+	authMgr := auth.NewManager()
+	srv := server.New(server.DefaultConfig(), nil)
+
+	d := New(Config{
+		Server:      srv,
+		AuthManager: authMgr,
+	})
+
+	handler := d.Handler()
+
+	tests := []struct {
+		name   string
+		header string
+	}{
+		{"No Bearer prefix", "invalid_token"},
+		{"Wrong prefix", "Basic dXNlcjpwYXNz"},
+		{"Empty after Bearer", "Bearer "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/api/tunnels", nil)
+			req.Header.Set("Authorization", tt.header)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("Status = %d, want %d", rec.Code, http.StatusUnauthorized)
+			}
+		})
+	}
+}
+
+func TestHandleSessions(t *testing.T) {
+	authMgr := auth.NewManager()
+	srv := server.New(server.DefaultConfig(), nil)
+
+	d := New(Config{
+		Server:      srv,
+		AuthManager: authMgr,
+	})
+
+	handler := d.Handler()
+
+	// GET /api/sessions
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+authMgr.DevToken())
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestHandleStats(t *testing.T) {
+	authMgr := auth.NewManager()
+	srv := server.New(server.DefaultConfig(), nil)
+
+	d := New(Config{
+		Server:       srv,
+		AuthManager:  authMgr,
+		Port:         4040,
+		HTTPSEnabled: true,
+	})
+
+	handler := d.Handler()
+
+	// GET /api/stats
+	req := httptest.NewRequest("GET", "/api/stats", nil)
+	req.Header.Set("Authorization", "Bearer "+authMgr.DevToken())
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestHandleDomainsGet(t *testing.T) {
+	authMgr := auth.NewManager()
+	srv := server.New(server.DefaultConfig(), nil)
+	domainMgr := config.NewDomainManager("test.dev")
+
+	d := New(Config{
+		Server:      srv,
+		AuthManager: authMgr,
+		DomainMgr:   domainMgr,
+	})
+
+	handler := d.Handler()
+
+	// GET /api/domains
+	req := httptest.NewRequest("GET", "/api/domains", nil)
+	req.Header.Set("Authorization", "Bearer "+authMgr.DevToken())
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestHandleDomainsGetNilManager(t *testing.T) {
+	authMgr := auth.NewManager()
+	srv := server.New(server.DefaultConfig(), nil)
+
+	d := New(Config{
+		Server:      srv,
+		AuthManager: authMgr,
+		DomainMgr:   nil,
+	})
+
+	handler := d.Handler()
+
+	// GET /api/domains with nil domain manager
+	req := httptest.NewRequest("GET", "/api/domains", nil)
+	req.Header.Set("Authorization", "Bearer "+authMgr.DevToken())
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestHandleDomainsPostInvalidJSON(t *testing.T) {
+	authMgr := auth.NewManager()
+	srv := server.New(server.DefaultConfig(), nil)
+	domainMgr := config.NewDomainManager("test.dev")
+
+	d := New(Config{
+		Server:      srv,
+		AuthManager: authMgr,
+		DomainMgr:   domainMgr,
+	})
+
+	handler := d.Handler()
+
+	// POST /api/domains with invalid JSON
+	req := httptest.NewRequest("POST", "/api/domains", nil)
+	req.Header.Set("Authorization", "Bearer "+authMgr.DevToken())
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleDomainsPostNilManager(t *testing.T) {
+	authMgr := auth.NewManager()
+	srv := server.New(server.DefaultConfig(), nil)
+
+	d := New(Config{
+		Server:      srv,
+		AuthManager: authMgr,
+		DomainMgr:   nil,
+	})
+
+	handler := d.Handler()
+
+	// POST /api/domains with nil domain manager (send valid JSON)
+	body := strings.NewReader(`{"domain":"test.dev","account_id":"test"}`)
+	req := httptest.NewRequest("POST", "/api/domains", body)
+	req.Header.Set("Authorization", "Bearer "+authMgr.DevToken())
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestHandleDomainsNotAllowedMethod(t *testing.T) {
+	authMgr := auth.NewManager()
+	srv := server.New(server.DefaultConfig(), nil)
+	domainMgr := config.NewDomainManager("test.dev")
+
+	d := New(Config{
+		Server:      srv,
+		AuthManager: authMgr,
+		DomainMgr:   domainMgr,
+	})
+
+	handler := d.Handler()
+
+	// DELETE /api/domains (not allowed at root level)
+	req := httptest.NewRequest("DELETE", "/api/domains", nil)
+	req.Header.Set("Authorization", "Bearer "+authMgr.DevToken())
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestJsonResponse(t *testing.T) {
+	d := New(Config{})
+	rec := httptest.NewRecorder()
+
+	d.jsonResponse(rec, map[string]string{"test": "value"})
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	contentType := rec.Header().Get("Content-Type")
+	if contentType != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/json")
+	}
+}
+
+func TestJsonError(t *testing.T) {
+	d := New(Config{})
+	rec := httptest.NewRecorder()
+
+	d.jsonError(rec, "Test error", http.StatusBadRequest)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+
+	contentType := rec.Header().Get("Content-Type")
+	if contentType != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/json")
 	}
 }
