@@ -1,9 +1,22 @@
-# WireRift
+<p align="center">
+  <img src="logo.png" alt="WireRift Logo" width="200">
+</p>
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/wirerift/wirerift)](https://goreportcard.com/report/github.com/wirerift/wirerift)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+<h1 align="center">WireRift</h1>
 
-**Tear a rift through the wire.** Expose localhost to the world.
+<p align="center">
+  <strong>Tear a rift through the wire. Expose localhost to the world.</strong>
+</p>
+
+<p align="center">
+  <a href="https://goreportcard.com/report/github.com/wirerift/wirerift"><img src="https://goreportcard.com/badge/github.com/wirerift/wirerift" alt="Go Report Card"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="https://github.com/WireRift/WireRift/releases/latest"><img src="https://img.shields.io/github/v/release/WireRift/WireRift" alt="Release"></a>
+</p>
+
+<p align="center">
+  <img src="wirerift.png" alt="WireRift Overview" width="700">
+</p>
 
 Open-source, zero-dependency tunnel server and client. Written in Go.
 
