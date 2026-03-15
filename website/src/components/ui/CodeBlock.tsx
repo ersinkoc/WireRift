@@ -12,6 +12,7 @@ interface CodeBlockProps {
   copyButton?: boolean
   showLanguageBadge?: boolean
   maxHeight?: string
+  forceDark?: boolean
 }
 
 export function CodeBlock({
@@ -24,9 +25,10 @@ export function CodeBlock({
   copyButton = true,
   showLanguageBadge = true,
   maxHeight,
+  forceDark = false,
 }: CodeBlockProps) {
   const resolved = useThemeStore((s) => s.resolved)
-  const codeshineTheme = resolved === 'dark' ? 'github-dark' : 'github-light'
+  const codeshineTheme = forceDark ? 'github-dark' : (resolved === 'dark' ? 'github-dark' : 'github-light')
 
   return (
     <div className={cn('codeblock-wrapper', className)}>

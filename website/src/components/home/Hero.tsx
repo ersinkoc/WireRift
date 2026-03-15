@@ -149,7 +149,7 @@ export function Hero() {
           {/* CTA Buttons */}
           <motion.div variants={fadeUp} className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-4">
             <Link to="/docs/getting-started" className="w-full sm:w-auto">
-              <button className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-8 py-3.5 text-sm font-bold uppercase tracking-wider rounded-xl text-white bg-[#e6edf3] text-[#010409] hover:bg-white transition-all duration-200 cursor-pointer">
+              <button className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-8 py-3.5 text-sm font-bold uppercase tracking-wider rounded-xl bg-[#e6edf3] text-[#010409] hover:bg-white transition-all duration-200 cursor-pointer">
                 Get Started
               </button>
             </Link>
@@ -184,6 +184,7 @@ export function Hero() {
                   filename="terminal"
                   lineNumbers={true}
                   showLanguageBadge={false}
+                  forceDark={true}
                 />
               </div>
             </div>
