@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,16 +18,17 @@ import (
 	"github.com/wirerift/wirerift/internal/auth"
 	"github.com/wirerift/wirerift/internal/mux"
 	"github.com/wirerift/wirerift/internal/proto"
+	"github.com/wirerift/wirerift/internal/ratelimit"
 )
 
 // Errors returned by server operations.
 var (
-	ErrServerClosed     = errors.New("server is closed")
-	ErrTunnelNotFound   = errors.New("tunnel not found")
-	ErrSessionNotFound  = errors.New("session not found")
-	ErrUnauthorized     = errors.New("unauthorized")
-	ErrSubdomainTaken   = errors.New("subdomain is already taken")
-	ErrPortUnavailable  = errors.New("port is unavailable")
+	ErrServerClosed       = errors.New("server is closed")
+	ErrTunnelNotFound     = errors.New("tunnel not found")
+	ErrSessionNotFound    = errors.New("session not found")
+	ErrUnauthorized       = errors.New("unauthorized")
+	ErrSubdomainTaken     = errors.New("subdomain is already taken")
+	ErrPortUnavailable    = errors.New("port is unavailable")
 	ErrMaxTunnelsExceeded = errors.New("maximum tunnels exceeded")
 )
 
@@ -96,6 +98,9 @@ type Server struct {
 	sessions sync.Map // map[string]*Session
 	tunnels  sync.Map // map[string]*Tunnel (by subdomain or port)
 
+	// Rate limiting
+	rateLimiter *ratelimit.Manager
+
 	// Port allocation
 	tcpPortStart int
 	tcpPortEnd   int
@@ -125,8 +130,8 @@ type Tunnel struct {
 	ID        string
 	Type      proto.TunnelType
 	SessionID string
-	Subdomain string    // for HTTP tunnels
-	Port      int       // for TCP tunnels
+	Subdomain string // for HTTP tunnels
+	Port      int    // for TCP tunnels
 	PublicURL string
 	LocalAddr string
 	CreatedAt time.Time
@@ -142,12 +147,13 @@ func New(config Config, logger *slog.Logger) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	s := &Server{
-		config:    config,
-		logger:    logger,
-		ctx:       ctx,
-		cancel:    cancel,
+		config:       config,
+		logger:       logger,
+		ctx:          ctx,
+		cancel:       cancel,
 		tcpPortStart: 20000,
 		tcpPortEnd:   29999,
+		rateLimiter:  ratelimit.NewManager(100, 50), // 100 req/s, burst 50
 	}
 
 	s.nextPort.Store(int32(s.tcpPortStart))
@@ -172,6 +178,20 @@ func (s *Server) Start() error {
 	if err := s.startHTTPListener(); err != nil {
 		return fmt.Errorf("start HTTP listener: %w", err)
 	}
+
+	// Start HTTPS edge listener if TLS is configured
+	if s.config.TLSConfig != nil {
+		if err := s.startHTTPSListener(); err != nil {
+			s.logger.Warn("HTTPS listener not started", "error", err)
+		}
+	}
+
+	// Start session cleanup goroutine
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.startSessionCleanup()
+	}()
 
 	s.logger.Info("server started",
 		"control", s.config.ControlAddr,
@@ -356,6 +376,11 @@ func (s *Server) handleTunnelRequests(m *mux.Mux, session *Session) {
 	for {
 		select {
 		case frame := <-m.ControlFrame():
+			// Update LastSeen on any control frame activity
+			session.mu.Lock()
+			session.LastSeen = time.Now()
+			session.mu.Unlock()
+
 			switch frame.Type {
 			case proto.FrameTunnelReq:
 				s.handleTunnelRequest(m, session, frame)
@@ -377,6 +402,14 @@ func (s *Server) handleTunnelRequest(m *mux.Mux, session *Session, frame *proto.
 	var req proto.TunnelRequest
 	if err := proto.DecodeJSONPayload(frame, &req); err != nil {
 		resp := &proto.TunnelResponse{OK: false, Error: "invalid request"}
+		respFrame, _ := proto.EncodeJSONPayload(proto.FrameTunnelRes, 0, resp)
+		m.GetFrameWriter().Write(respFrame)
+		return
+	}
+
+	// Rate limit tunnel creation by session ID
+	if !s.rateLimiter.Allow("tunnel:" + session.ID) {
+		resp := &proto.TunnelResponse{OK: false, Error: "rate limit exceeded"}
 		respFrame, _ := proto.EncodeJSONPayload(proto.FrameTunnelRes, 0, resp)
 		m.GetFrameWriter().Write(respFrame)
 		return
@@ -631,8 +664,41 @@ func (s *Server) startHTTPListener() error {
 	return nil
 }
 
+// startHTTPSListener starts the HTTPS edge listener.
+func (s *Server) startHTTPSListener() error {
+	ln, err := net.Listen("tcp", s.config.HTTPSAddr)
+	if err != nil {
+		return err
+	}
+	tlsListener := tls.NewListener(ln, s.config.TLSConfig)
+	s.httpsListener = tlsListener
+
+	handler := http.HandlerFunc(s.handleHTTPRequest)
+	server := &http.Server{Handler: handler}
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		if err := server.Serve(tlsListener); err != nil && err != http.ErrServerClosed {
+			s.logger.Error("HTTPS server error", "error", err)
+		}
+	}()
+
+	return nil
+}
+
 // handleHTTPRequest handles incoming HTTP requests.
 func (s *Server) handleHTTPRequest(w http.ResponseWriter, r *http.Request) {
+	// Rate limit by client IP
+	clientIP := r.RemoteAddr
+	if idx := strings.LastIndex(clientIP, ":"); idx > 0 {
+		clientIP = clientIP[:idx]
+	}
+	if !s.rateLimiter.Allow(clientIP) {
+		http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
 	// Extract subdomain from Host header
 	host := r.Host
 	subdomain := extractSubdomain(host, s.config.Domain)
@@ -661,6 +727,11 @@ func (s *Server) handleHTTPRequest(w http.ResponseWriter, r *http.Request) {
 
 // forwardHTTPRequest forwards an HTTP request through the tunnel.
 func (s *Server) forwardHTTPRequest(w http.ResponseWriter, r *http.Request, session *Session, tunnel *Tunnel) {
+	if IsWebSocketRequest(r) {
+		s.forwardWebSocket(w, r, session, tunnel)
+		return
+	}
+
 	// 1. Open a new mux stream
 	stream, err := session.Mux.OpenStream()
 	if err != nil {
@@ -704,6 +775,71 @@ func (s *Server) forwardHTTPRequest(w http.ResponseWriter, r *http.Request, sess
 
 	// 6. Write the response back to the edge HTTP client
 	WriteResponse(w, resp)
+}
+
+// forwardWebSocket handles WebSocket upgrade requests by hijacking the connection
+// and performing bidirectional copy between the client and the tunnel stream.
+func (s *Server) forwardWebSocket(w http.ResponseWriter, r *http.Request, session *Session, tunnel *Tunnel) {
+	// Hijack the HTTP connection to get raw TCP access
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "WebSocket not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Open a mux stream
+	stream, err := session.Mux.OpenStream()
+	if err != nil {
+		http.Error(w, "Failed to open stream", http.StatusBadGateway)
+		return
+	}
+	defer stream.Close()
+
+	// Send STREAM_OPEN
+	openFrame, _ := StreamOpenForHTTP(tunnel.ID, stream.ID(), r.RemoteAddr)
+	if err := session.Mux.GetFrameWriter().Write(openFrame); err != nil {
+		http.Error(w, "Failed to send stream open", http.StatusBadGateway)
+		return
+	}
+
+	// Serialize and send the upgrade request
+	reqData, err := SerializeRequest(r)
+	if err != nil {
+		http.Error(w, "Failed to serialize request", http.StatusInternalServerError)
+		return
+	}
+	if _, err := stream.Write(reqData); err != nil {
+		http.Error(w, "Failed to write request", http.StatusBadGateway)
+		return
+	}
+
+	// Hijack the connection
+	conn, bufrw, err := hijacker.Hijack()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	// Bidirectional copy between hijacked conn and stream
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		io.Copy(conn, stream)
+		conn.Close()
+	}()
+	go func() {
+		defer wg.Done()
+		// First flush any buffered data
+		if bufrw.Reader.Buffered() > 0 {
+			buffered := make([]byte, bufrw.Reader.Buffered())
+			bufrw.Read(buffered)
+			stream.Write(buffered)
+		}
+		io.Copy(stream, conn)
+		stream.Close()
+	}()
+	wg.Wait()
 }
 
 // getTunnelBySubdomain looks up a tunnel by subdomain.
@@ -803,11 +939,11 @@ type TunnelInfo struct {
 
 // SessionInfo represents session information for API responses.
 type SessionInfo struct {
-	ID           string    `json:"id"`
-	AccountID    string    `json:"account_id"`
-	RemoteAddr   string    `json:"remote_addr"`
-	ConnectedAt  time.Time `json:"connected_at"`
-	TunnelCount  int       `json:"tunnel_count"`
+	ID          string    `json:"id"`
+	AccountID   string    `json:"account_id"`
+	RemoteAddr  string    `json:"remote_addr"`
+	ConnectedAt time.Time `json:"connected_at"`
+	TunnelCount int       `json:"tunnel_count"`
 }
 
 // ListTunnels returns a list of all active tunnels.
@@ -875,4 +1011,37 @@ func (s *Server) Stats() map[string]interface{} {
 		"bytes_in":        bytesIn,
 		"bytes_out":       bytesOut,
 	}
+}
+
+// startSessionCleanup periodically checks for inactive sessions and removes them.
+func (s *Server) startSessionCleanup() {
+	ticker := time.NewTicker(s.config.SessionTimeout / 2)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+			s.cleanupInactiveSessions()
+		}
+	}
+}
+
+// cleanupInactiveSessions removes sessions that have exceeded the session timeout.
+func (s *Server) cleanupInactiveSessions() {
+	now := time.Now()
+	s.sessions.Range(func(key, value any) bool {
+		session := value.(*Session)
+		session.mu.RLock()
+		lastSeen := session.LastSeen
+		session.mu.RUnlock()
+
+		if now.Sub(lastSeen) > s.config.SessionTimeout {
+			s.logger.Info("session timed out", "id", session.ID)
+			session.Mux.Close()
+			s.removeSession(session.ID)
+		}
+		return true
+	})
 }

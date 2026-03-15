@@ -17,6 +17,7 @@ import (
 	"github.com/wirerift/wirerift/internal/auth"
 	"github.com/wirerift/wirerift/internal/mux"
 	"github.com/wirerift/wirerift/internal/proto"
+	"github.com/wirerift/wirerift/internal/ratelimit"
 )
 
 func TestExtractSubdomain(t *testing.T) {
@@ -2539,4 +2540,1205 @@ func TestHTTPAddr(t *testing.T) {
 	if addr == ":80" || addr == "127.0.0.1:0" {
 		t.Errorf("HTTPAddr after start should be resolved, got %q", addr)
 	}
+}
+
+// TestStartHTTPSListenerWithTLSConfig tests that the HTTPS listener starts when TLS config is provided.
+func TestStartHTTPSListenerWithTLSConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ControlAddr = "127.0.0.1:0"
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.HTTPSAddr = "127.0.0.1:0"
+	cfg.TLSConfig = &tls.Config{
+		InsecureSkipVerify: true,
+	}
+
+	s := New(cfg, nil)
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer s.Stop()
+
+	// HTTPS listener should have been created
+	if s.httpsListener == nil {
+		t.Fatal("HTTPS listener should be initialized when TLS config is set")
+	}
+}
+
+// TestStartHTTPSListenerWithoutTLSConfig tests that the HTTPS listener is not started without TLS config.
+func TestStartHTTPSListenerWithoutTLSConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ControlAddr = "127.0.0.1:0"
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.TLSConfig = nil
+
+	s := New(cfg, nil)
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer s.Stop()
+
+	// HTTPS listener should NOT have been created
+	if s.httpsListener != nil {
+		t.Fatal("HTTPS listener should not be initialized when TLS config is nil")
+	}
+}
+
+// TestStartHTTPSListenerBadAddress tests that a bad HTTPS address is handled gracefully.
+func TestStartHTTPSListenerBadAddress(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ControlAddr = "127.0.0.1:0"
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.HTTPSAddr = "invalid-address-::-1" // invalid address
+	cfg.TLSConfig = &tls.Config{}
+
+	s := New(cfg, nil)
+	// Start should succeed -- HTTPS failure is logged as warning, not fatal
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer s.Stop()
+
+	// HTTPS listener should be nil since it failed
+	if s.httpsListener != nil {
+		t.Error("HTTPS listener should be nil when address is invalid")
+	}
+}
+
+// TestStopClosesHTTPSListener tests that Stop closes the HTTPS listener.
+func TestStopClosesHTTPSListener(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ControlAddr = "127.0.0.1:0"
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.HTTPSAddr = "127.0.0.1:0"
+	cfg.TLSConfig = &tls.Config{}
+
+	s := New(cfg, nil)
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	if s.httpsListener == nil {
+		t.Fatal("HTTPS listener should exist before stop")
+	}
+
+	if err := s.Stop(); err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+}
+
+// --- Tests for forwardWebSocket (0% coverage) ---
+
+// hijackableResponseWriter implements http.ResponseWriter and http.Hijacker for testing.
+type hijackableResponseWriter struct {
+	httptest.ResponseRecorder
+	conn   net.Conn
+	bufrw  *bufio.ReadWriter
+	hijErr error
+}
+
+func (h *hijackableResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h.hijErr != nil {
+		return nil, nil, h.hijErr
+	}
+	return h.conn, h.bufrw, nil
+}
+
+func newHijackableResponseWriter(conn net.Conn) *hijackableResponseWriter {
+	return &hijackableResponseWriter{
+		ResponseRecorder: *httptest.NewRecorder(),
+		conn:             conn,
+		bufrw:            bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn)),
+	}
+}
+
+func TestForwardWebSocketFullFlow(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	c1, c2 := net.Pipe()
+	m := mux.New(c1, mux.DefaultConfig())
+	go m.Run()
+
+	clientMux := mux.New(c2, mux.DefaultConfig())
+	go clientMux.Run()
+
+	tunnel := &Tunnel{ID: "tun-ws", Type: proto.TunnelTypeHTTP, Subdomain: "wstest", SessionID: "sess-ws"}
+	session := &Session{ID: "sess-ws", AccountID: "account-1", Mux: m}
+
+	// Accept the stream on the client side and send back a WebSocket upgrade response
+	go func() {
+		stream, err := clientMux.AcceptStream()
+		if err != nil {
+			return
+		}
+		// Read the upgrade request
+		reader := bufio.NewReader(stream)
+		httpReq, err := http.ReadRequest(reader)
+		if err != nil {
+			stream.Close()
+			return
+		}
+		httpReq.Body.Close()
+
+		// Write a WebSocket upgrade response
+		resp := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+		stream.Write([]byte(resp))
+		// Write some data as if it's a websocket frame
+		stream.Write([]byte("ws-data-from-server"))
+		// Close after a bit to end the test
+		time.Sleep(50 * time.Millisecond)
+		stream.Close()
+	}()
+
+	// Create the hijackable connection pair
+	edgeConn, edgeRemote := net.Pipe()
+
+	hw := newHijackableResponseWriter(edgeConn)
+
+	req := httptest.NewRequest("GET", "http://wstest.wirerift.dev/ws", nil)
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+	req.Host = "wstest.wirerift.dev"
+
+	done := make(chan struct{})
+	go func() {
+		s.forwardWebSocket(hw, req, session, tunnel)
+		close(done)
+	}()
+
+	// Read data from the edge remote side (the "browser" side)
+	buf := make([]byte, 1024)
+	n, _ := edgeRemote.Read(buf)
+	data := string(buf[:n])
+	if !strings.Contains(data, "101 Switching Protocols") {
+		t.Logf("Got data: %s", data)
+	}
+
+	edgeRemote.Close()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Error("forwardWebSocket did not complete")
+	}
+
+	c1.Close()
+	c2.Close()
+}
+
+func TestForwardWebSocketHijackNotSupported(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+	m := mux.New(c1, mux.DefaultConfig())
+
+	tunnel := &Tunnel{ID: "tun-ws-nohijack"}
+	session := &Session{ID: "sess-ws-nohijack", Mux: m}
+
+	// httptest.NewRecorder does NOT implement http.Hijacker
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "http://test.wirerift.dev/ws", nil)
+	req.Header.Set("Upgrade", "websocket")
+
+	s.forwardWebSocket(rr, req, session, tunnel)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("Expected status 500, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "WebSocket not supported") {
+		t.Errorf("Expected 'WebSocket not supported' in body, got: %s", body)
+	}
+}
+
+func TestForwardWebSocketOpenStreamError(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	c1, c2 := net.Pipe()
+	defer c2.Close()
+	m := mux.New(c1, mux.DefaultConfig())
+	m.Close() // Close mux so OpenStream fails
+
+	tunnel := &Tunnel{ID: "tun-ws-openstream-err"}
+	session := &Session{ID: "sess-ws-openstream-err", Mux: m}
+
+	edgeConn, edgeRemote := net.Pipe()
+	defer edgeRemote.Close()
+	hw := newHijackableResponseWriter(edgeConn)
+
+	req := httptest.NewRequest("GET", "http://test.wirerift.dev/ws", nil)
+	req.Header.Set("Upgrade", "websocket")
+
+	s.forwardWebSocket(hw, req, session, tunnel)
+
+	if hw.Code != http.StatusBadGateway {
+		t.Errorf("Expected status 502, got %d", hw.Code)
+	}
+}
+
+func TestForwardWebSocketStreamOpenWriteError(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	c1, c2 := net.Pipe()
+	// Wrap c1 so that writes fail
+	wfc := &writeFailConn{Conn: c1, writesLeft: 0}
+	m := mux.New(wfc, mux.DefaultConfig())
+	go io.Copy(io.Discard, c2)
+
+	tunnel := &Tunnel{ID: "tun-ws-writeframe-err"}
+	session := &Session{ID: "sess-ws-writeframe-err", Mux: m}
+
+	edgeConn, edgeRemote := net.Pipe()
+	defer edgeRemote.Close()
+	hw := newHijackableResponseWriter(edgeConn)
+
+	req := httptest.NewRequest("GET", "http://test.wirerift.dev/ws", nil)
+	req.Header.Set("Upgrade", "websocket")
+
+	s.forwardWebSocket(hw, req, session, tunnel)
+
+	if hw.Code != http.StatusBadGateway {
+		t.Errorf("Expected status 502, got %d", hw.Code)
+	}
+	body := hw.Body.String()
+	if !strings.Contains(body, "Failed to send stream open") {
+		t.Errorf("Expected 'Failed to send stream open' in body, got: %s", body)
+	}
+	c1.Close()
+	c2.Close()
+}
+
+func TestForwardWebSocketSerializeError(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	c1, c2 := net.Pipe()
+	m := mux.New(c1, mux.DefaultConfig())
+	go m.Run()
+
+	clientMux := mux.New(c2, mux.DefaultConfig())
+	go clientMux.Run()
+
+	// Drain streams on client side
+	go func() {
+		for {
+			stream, err := clientMux.AcceptStream()
+			if err != nil {
+				return
+			}
+			stream.Close()
+		}
+	}()
+
+	tunnel := &Tunnel{ID: "tun-ws-ser-err"}
+	session := &Session{ID: "sess-ws-ser-err", Mux: m}
+
+	edgeConn, edgeRemote := net.Pipe()
+	defer edgeRemote.Close()
+	hw := newHijackableResponseWriter(edgeConn)
+
+	// Request with a body that returns an error on read
+	req := httptest.NewRequest("POST", "http://test.wirerift.dev/ws", &errorReader{})
+	req.Header.Set("Upgrade", "websocket")
+
+	s.forwardWebSocket(hw, req, session, tunnel)
+
+	if hw.Code != http.StatusInternalServerError {
+		t.Errorf("Expected status 500, got %d", hw.Code)
+	}
+	body := hw.Body.String()
+	if !strings.Contains(body, "Failed to serialize request") {
+		t.Errorf("Expected 'Failed to serialize request' in body, got: %s", body)
+	}
+	c1.Close()
+	c2.Close()
+}
+
+func TestForwardWebSocketStreamWriteError(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	c1, c2 := net.Pipe()
+	m := mux.New(c1, mux.DefaultConfig())
+	go m.Run()
+
+	// On c2 side, read the STREAM_OPEN frame then close to make stream.Write fail
+	go func() {
+		fr := proto.NewFrameReader(c2)
+		_, err := fr.Read()
+		if err != nil {
+			return
+		}
+		c2.Close()
+	}()
+
+	tunnel := &Tunnel{ID: "tun-ws-sw-err"}
+	session := &Session{ID: "sess-ws-sw-err", Mux: m}
+
+	edgeConn, edgeRemote := net.Pipe()
+	defer edgeRemote.Close()
+	hw := newHijackableResponseWriter(edgeConn)
+
+	req := httptest.NewRequest("GET", "http://test.wirerift.dev/ws", nil)
+	req.Header.Set("Upgrade", "websocket")
+
+	s.forwardWebSocket(hw, req, session, tunnel)
+
+	if hw.Code != http.StatusBadGateway {
+		t.Errorf("Expected status 502, got %d", hw.Code)
+	}
+	body := hw.Body.String()
+	if !strings.Contains(body, "Failed to write request") {
+		t.Errorf("Expected 'Failed to write request' in body, got: %s", body)
+	}
+	c1.Close()
+}
+
+func TestForwardWebSocketHijackError(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	c1, c2 := net.Pipe()
+	m := mux.New(c1, mux.DefaultConfig())
+	go m.Run()
+
+	clientMux := mux.New(c2, mux.DefaultConfig())
+	go clientMux.Run()
+
+	// Accept streams and read request data on client side
+	go func() {
+		stream, err := clientMux.AcceptStream()
+		if err != nil {
+			return
+		}
+		reader := bufio.NewReader(stream)
+		httpReq, err := http.ReadRequest(reader)
+		if err != nil {
+			stream.Close()
+			return
+		}
+		httpReq.Body.Close()
+		stream.Close()
+	}()
+
+	tunnel := &Tunnel{ID: "tun-ws-hij-err"}
+	session := &Session{ID: "sess-ws-hij-err", Mux: m}
+
+	edgeConn, edgeRemote := net.Pipe()
+	defer edgeRemote.Close()
+	hw := newHijackableResponseWriter(edgeConn)
+	hw.hijErr = fmt.Errorf("hijack failed")
+
+	req := httptest.NewRequest("GET", "http://test.wirerift.dev/ws", nil)
+	req.Header.Set("Upgrade", "websocket")
+
+	s.forwardWebSocket(hw, req, session, tunnel)
+
+	// Hijack error should just return without writing more
+	c1.Close()
+	c2.Close()
+}
+
+func TestForwardWebSocketWithBufferedData(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	c1, c2 := net.Pipe()
+	m := mux.New(c1, mux.DefaultConfig())
+	go m.Run()
+
+	clientMux := mux.New(c2, mux.DefaultConfig())
+	go clientMux.Run()
+
+	tunnel := &Tunnel{ID: "tun-ws-buf", Type: proto.TunnelTypeHTTP, Subdomain: "wsbuf", SessionID: "sess-ws-buf"}
+	session := &Session{ID: "sess-ws-buf", AccountID: "account-1", Mux: m}
+
+	// Accept the stream and respond with a WS upgrade, then read
+	go func() {
+		stream, err := clientMux.AcceptStream()
+		if err != nil {
+			return
+		}
+		reader := bufio.NewReader(stream)
+		httpReq, err := http.ReadRequest(reader)
+		if err != nil {
+			stream.Close()
+			return
+		}
+		httpReq.Body.Close()
+		// Send upgrade
+		resp := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n"
+		stream.Write([]byte(resp))
+		// Read any data from the stream
+		buf := make([]byte, 1024)
+		stream.Read(buf)
+		time.Sleep(30 * time.Millisecond)
+		stream.Close()
+	}()
+
+	// Create a connection pair where the edge side has buffered data
+	edgeConn, edgeRemote := net.Pipe()
+
+	// Write some data to the edgeRemote so the bufrw has buffered data
+	go func() {
+		// Write some data from the "browser" side before hijack reads it
+		edgeRemote.Write([]byte("buffered-ws-data"))
+		time.Sleep(100 * time.Millisecond)
+		edgeRemote.Close()
+	}()
+
+	// Allow time for the data to be available
+	time.Sleep(10 * time.Millisecond)
+
+	hw := newHijackableResponseWriter(edgeConn)
+
+	req := httptest.NewRequest("GET", "http://wstest.wirerift.dev/ws", nil)
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+
+	done := make(chan struct{})
+	go func() {
+		s.forwardWebSocket(hw, req, session, tunnel)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Error("forwardWebSocket did not complete")
+		edgeRemote.Close()
+	}
+
+	c1.Close()
+	c2.Close()
+}
+
+// --- Tests for forwardHTTPRequest WebSocket detection branch ---
+
+func TestForwardHTTPRequestWebSocketDetection(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	c1, c2 := net.Pipe()
+	m := mux.New(c1, mux.DefaultConfig())
+
+	tunnel := &Tunnel{ID: "tun-wsdetect"}
+	session := &Session{ID: "sess-wsdetect", Mux: m}
+
+	// httptest.NewRecorder does NOT implement Hijacker, so forwardWebSocket
+	// will write "WebSocket not supported" 500 error
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "http://test.wirerift.dev/ws", nil)
+	req.Header.Set("Upgrade", "websocket")
+
+	s.forwardHTTPRequest(rr, req, session, tunnel)
+
+	// The request is detected as WebSocket and forwarded to forwardWebSocket
+	// which fails because httptest.ResponseRecorder doesn't implement Hijacker
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("Expected status 500 (not hijackable), got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "WebSocket not supported") {
+		t.Errorf("Expected 'WebSocket not supported', got: %s", body)
+	}
+
+	c1.Close()
+	c2.Close()
+}
+
+// --- Tests for cleanupInactiveSessions (0% coverage) ---
+
+func TestCleanupInactiveSessions(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SessionTimeout = 100 * time.Millisecond
+	s := New(cfg, nil)
+
+	// Create a mock listener to get a real addr
+	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer listener.Close()
+
+	// Create a pipe for the mux
+	c1, c2 := net.Pipe()
+	defer c2.Close()
+	m := mux.New(c1, mux.DefaultConfig())
+	go m.Run()
+
+	// Create a session with LastSeen far in the past
+	session := &Session{
+		ID:         "sess-expired",
+		AccountID:  "account-1",
+		Mux:        m,
+		Tunnels:    make(map[string]*Tunnel),
+		CreatedAt:  time.Now().Add(-time.Hour),
+		LastSeen:   time.Now().Add(-time.Hour),
+		RemoteAddr: listener.Addr(),
+	}
+	s.sessions.Store("sess-expired", session)
+
+	// Also store a tunnel for this session
+	tunnel := &Tunnel{
+		ID:        "tun-expired",
+		Type:      proto.TunnelTypeHTTP,
+		SessionID: "sess-expired",
+		Subdomain: "expired",
+	}
+	session.Tunnels["tun-expired"] = tunnel
+	s.tunnels.Store("expired", tunnel)
+
+	// Call cleanupInactiveSessions directly
+	s.cleanupInactiveSessions()
+
+	// Session should be removed
+	_, ok := s.getSession("sess-expired")
+	if ok {
+		t.Error("Expired session should have been cleaned up")
+	}
+
+	// Tunnel should be removed too
+	_, ok = s.getTunnelBySubdomain("expired")
+	if ok {
+		t.Error("Tunnel for expired session should have been cleaned up")
+	}
+}
+
+func TestCleanupInactiveSessionsKeepsActive(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SessionTimeout = 60 * time.Second
+	s := New(cfg, nil)
+
+	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer listener.Close()
+
+	// Create a session with recent LastSeen
+	session := &Session{
+		ID:         "sess-active",
+		AccountID:  "account-1",
+		Tunnels:    make(map[string]*Tunnel),
+		CreatedAt:  time.Now(),
+		LastSeen:   time.Now(),
+		RemoteAddr: listener.Addr(),
+	}
+	s.sessions.Store("sess-active", session)
+
+	s.cleanupInactiveSessions()
+
+	// Session should NOT be removed
+	_, ok := s.getSession("sess-active")
+	if !ok {
+		t.Error("Active session should not be cleaned up")
+	}
+}
+
+// --- Tests for startSessionCleanup ticker path ---
+
+func TestStartSessionCleanupTickerPath(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SessionTimeout = 100 * time.Millisecond // ticker fires every 50ms
+	s := New(cfg, nil)
+
+	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer listener.Close()
+
+	c1, c2 := net.Pipe()
+	defer c2.Close()
+	m := mux.New(c1, mux.DefaultConfig())
+	go m.Run()
+
+	// Create a session that should be cleaned up
+	session := &Session{
+		ID:         "sess-ticker-expired",
+		AccountID:  "account-1",
+		Mux:        m,
+		Tunnels:    make(map[string]*Tunnel),
+		CreatedAt:  time.Now().Add(-time.Hour),
+		LastSeen:   time.Now().Add(-time.Hour),
+		RemoteAddr: listener.Addr(),
+	}
+	s.sessions.Store("sess-ticker-expired", session)
+
+	// Start the cleanup goroutine
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.startSessionCleanup()
+	}()
+
+	// Wait for the ticker to fire and clean up
+	time.Sleep(200 * time.Millisecond)
+
+	// Session should have been cleaned up by the ticker
+	_, ok := s.getSession("sess-ticker-expired")
+	if ok {
+		t.Error("Expired session should have been cleaned up by ticker")
+	}
+
+	// Cancel to stop the cleanup goroutine
+	s.cancel()
+	s.wg.Wait()
+}
+
+// --- Tests for rate limiting in handleHTTPRequest ---
+
+func TestHandleHTTPRequestRateLimited(t *testing.T) {
+	cfg := DefaultConfig()
+	s := New(cfg, nil)
+	// Use a very restrictive rate limiter: 0 tokens burst, so first request is denied
+	s.rateLimiter = ratelimit.NewManager(0.001, 0)
+
+	// Exhaust rate limiter by draining any initial tokens
+	s.rateLimiter.Allow("127.0.0.1")
+	s.rateLimiter.Allow("127.0.0.1")
+
+	req := httptest.NewRequest("GET", "http://test.wirerift.dev/", nil)
+	req.Host = "test.wirerift.dev"
+	req.RemoteAddr = "127.0.0.1:12345"
+
+	rr := httptest.NewRecorder()
+	s.handleHTTPRequest(rr, req)
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Errorf("Expected status 429, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "Rate limit exceeded") {
+		t.Errorf("Expected 'Rate limit exceeded' in body, got: %s", body)
+	}
+}
+
+// --- Tests for rate limiting in handleTunnelRequest ---
+
+func TestHandleTunnelRequestRateLimited(t *testing.T) {
+	authMgr := auth.NewManager()
+	cfg := DefaultConfig()
+	cfg.AuthManager = authMgr
+	cfg.MaxTunnelsPerSession = 100
+	s := New(cfg, nil)
+	// Use a very restrictive rate limiter
+	s.rateLimiter = ratelimit.NewManager(0.001, 0)
+
+	c1, c2 := net.Pipe()
+	m := mux.New(c1, mux.DefaultConfig())
+	go m.Run()
+
+	session := &Session{
+		ID:      "sess-ratelimit",
+		Tunnels: make(map[string]*Tunnel),
+	}
+
+	// Exhaust the rate limiter for this session
+	s.rateLimiter.Allow("tunnel:sess-ratelimit")
+	s.rateLimiter.Allow("tunnel:sess-ratelimit")
+
+	req := &proto.TunnelRequest{
+		Type:      proto.TunnelTypeHTTP,
+		Subdomain: "ratelimited",
+		LocalAddr: "localhost:3000",
+	}
+	frame, _ := proto.EncodeJSONPayload(proto.FrameTunnelReq, 0, req)
+
+	go s.handleTunnelRequest(m, session, frame)
+
+	fr := proto.NewFrameReader(c2)
+	respFrame, err := fr.Read()
+	if err != nil {
+		t.Fatalf("Failed to read tunnel response: %v", err)
+	}
+
+	var res proto.TunnelResponse
+	proto.DecodeJSONPayload(respFrame, &res)
+	if res.OK {
+		t.Fatal("Tunnel creation should fail when rate limited")
+	}
+	if !strings.Contains(res.Error, "rate limit exceeded") {
+		t.Errorf("Expected 'rate limit exceeded' error, got: %s", res.Error)
+	}
+
+	c1.Close()
+	c2.Close()
+}
+
+// --- Tests for HTTPProxy.ProxyRequest ---
+
+func TestHTTPProxyProxyRequestFullFlow(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+	proxy := NewHTTPProxy(s, 5*time.Second)
+
+	c1, c2 := net.Pipe()
+	m := mux.New(c1, mux.DefaultConfig())
+	go m.Run()
+
+	clientMux := mux.New(c2, mux.DefaultConfig())
+	go clientMux.Run()
+
+	tunnel := &Tunnel{ID: "tun-proxy", Type: proto.TunnelTypeHTTP, Subdomain: "proxy"}
+	session := &Session{ID: "sess-proxy", Mux: m, Tunnels: map[string]*Tunnel{"tun-proxy": tunnel}}
+
+	// Accept stream on client side and respond
+	go func() {
+		stream, err := clientMux.AcceptStream()
+		if err != nil {
+			return
+		}
+		defer stream.Close()
+
+		reader := bufio.NewReader(stream)
+		httpReq, err := http.ReadRequest(reader)
+		if err != nil {
+			return
+		}
+		httpReq.Body.Close()
+
+		// Write a valid HTTP response
+		resp := "HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nProxy success"
+		stream.Write([]byte(resp))
+	}()
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "http://proxy.wirerift.dev/test", nil)
+	req.Host = "proxy.wirerift.dev"
+
+	err := proxy.ProxyRequest(rr, req, tunnel, session)
+	if err != nil {
+		t.Fatalf("ProxyRequest failed: %v", err)
+	}
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+	if body := rr.Body.String(); body != "Proxy success" {
+		t.Errorf("Expected body 'Proxy success', got: %s", body)
+	}
+
+	c1.Close()
+	c2.Close()
+}
+
+func TestHTTPProxyProxyRequestOpenStreamError(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+	proxy := NewHTTPProxy(s, 5*time.Second)
+
+	c1, c2 := net.Pipe()
+	defer c2.Close()
+	m := mux.New(c1, mux.DefaultConfig())
+	m.Close()
+
+	tunnel := &Tunnel{ID: "tun-proxy-err"}
+	session := &Session{ID: "sess-proxy-err", Mux: m}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "http://test.wirerift.dev/", nil)
+
+	err := proxy.ProxyRequest(rr, req, tunnel, session)
+	if err == nil {
+		t.Fatal("Expected error from ProxyRequest when mux is closed")
+	}
+	if !strings.Contains(err.Error(), "open stream") {
+		t.Errorf("Expected 'open stream' in error, got: %v", err)
+	}
+}
+
+func TestHTTPProxyProxyRequestFrameWriteError(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+	proxy := NewHTTPProxy(s, 5*time.Second)
+
+	c1, c2 := net.Pipe()
+	wfc := &writeFailConn{Conn: c1, writesLeft: 0}
+	m := mux.New(wfc, mux.DefaultConfig())
+	go io.Copy(io.Discard, c2)
+
+	tunnel := &Tunnel{ID: "tun-proxy-fw-err"}
+	session := &Session{ID: "sess-proxy-fw-err", Mux: m}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "http://test.wirerift.dev/", nil)
+
+	err := proxy.ProxyRequest(rr, req, tunnel, session)
+	if err == nil {
+		t.Fatal("Expected error from ProxyRequest when frame write fails")
+	}
+	if !strings.Contains(err.Error(), "send stream open") {
+		t.Errorf("Expected 'send stream open' in error, got: %v", err)
+	}
+	c1.Close()
+	c2.Close()
+}
+
+func TestHTTPProxyProxyRequestSerializeError(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+	proxy := NewHTTPProxy(s, 5*time.Second)
+
+	c1, c2 := net.Pipe()
+	m := mux.New(c1, mux.DefaultConfig())
+	go m.Run()
+
+	clientMux := mux.New(c2, mux.DefaultConfig())
+	go clientMux.Run()
+
+	go func() {
+		for {
+			stream, err := clientMux.AcceptStream()
+			if err != nil {
+				return
+			}
+			stream.Close()
+		}
+	}()
+
+	tunnel := &Tunnel{ID: "tun-proxy-ser-err"}
+	session := &Session{ID: "sess-proxy-ser-err", Mux: m}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "http://test.wirerift.dev/", &errorReader{})
+
+	err := proxy.ProxyRequest(rr, req, tunnel, session)
+	if err == nil {
+		t.Fatal("Expected error from ProxyRequest when serialize fails")
+	}
+	if !strings.Contains(err.Error(), "serialize request") {
+		t.Errorf("Expected 'serialize request' in error, got: %v", err)
+	}
+	c1.Close()
+	c2.Close()
+}
+
+func TestHTTPProxyProxyRequestWriteError(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+	proxy := NewHTTPProxy(s, 5*time.Second)
+
+	c1, c2 := net.Pipe()
+	m := mux.New(c1, mux.DefaultConfig())
+	go m.Run()
+
+	// Close c2 after reading the STREAM_OPEN to make stream.Write fail
+	go func() {
+		fr := proto.NewFrameReader(c2)
+		fr.Read()
+		c2.Close()
+	}()
+
+	tunnel := &Tunnel{ID: "tun-proxy-wr-err"}
+	session := &Session{ID: "sess-proxy-wr-err", Mux: m}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "http://test.wirerift.dev/", nil)
+
+	err := proxy.ProxyRequest(rr, req, tunnel, session)
+	if err == nil {
+		t.Fatal("Expected error from ProxyRequest when write fails")
+	}
+	if !strings.Contains(err.Error(), "write request") {
+		t.Errorf("Expected 'write request' in error, got: %v", err)
+	}
+	c1.Close()
+}
+
+func TestHTTPProxyProxyRequestDeserializeError(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+	proxy := NewHTTPProxy(s, 5*time.Second)
+
+	c1, c2 := net.Pipe()
+	m := mux.New(c1, mux.DefaultConfig())
+	go m.Run()
+
+	clientMux := mux.New(c2, mux.DefaultConfig())
+	go clientMux.Run()
+
+	go func() {
+		stream, err := clientMux.AcceptStream()
+		if err != nil {
+			return
+		}
+		reader := bufio.NewReader(stream)
+		httpReq, err := http.ReadRequest(reader)
+		if err != nil {
+			stream.Close()
+			return
+		}
+		httpReq.Body.Close()
+		// Write invalid response
+		stream.Write([]byte("not a valid http response"))
+		stream.Close()
+	}()
+
+	tunnel := &Tunnel{ID: "tun-proxy-deser-err"}
+	session := &Session{ID: "sess-proxy-deser-err", Mux: m}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "http://test.wirerift.dev/", nil)
+
+	err := proxy.ProxyRequest(rr, req, tunnel, session)
+	if err == nil {
+		t.Fatal("Expected error from ProxyRequest when deserialize fails")
+	}
+	if !strings.Contains(err.Error(), "deserialize response") {
+		t.Errorf("Expected 'deserialize response' in error, got: %v", err)
+	}
+	c1.Close()
+	c2.Close()
+}
+
+// --- Tests for TCPProxy.ProxyConnection ---
+
+func TestTCPProxyProxyConnectionFullFlow(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+	proxy := NewTCPProxy(s, 0, 0) // defaults
+
+	c1, c2 := net.Pipe()
+	m := mux.New(c1, mux.DefaultConfig())
+	go m.Run()
+
+	clientMux := mux.New(c2, mux.DefaultConfig())
+	go clientMux.Run()
+
+	tunnel := &Tunnel{ID: "tun-tcpproxy"}
+	session := &Session{ID: "sess-tcpproxy", Mux: m}
+
+	// Accept stream on client side and echo data back
+	go func() {
+		stream, err := clientMux.AcceptStream()
+		if err != nil {
+			return
+		}
+		// Read data and echo back
+		buf := make([]byte, 1024)
+		n, _ := stream.Read(buf)
+		if n > 0 {
+			stream.Write(buf[:n])
+		}
+		stream.Close()
+	}()
+
+	// Create a connection to proxy
+	proxyConn, proxyRemote := net.Pipe()
+
+	done := make(chan struct{})
+	go func() {
+		proxy.ProxyConnection(proxyConn, tunnel, session)
+		close(done)
+	}()
+
+	// Write data from the "external client" side
+	proxyRemote.Write([]byte("hello-tcp"))
+	// Read echoed data
+	buf := make([]byte, 1024)
+	n, _ := proxyRemote.Read(buf)
+	if n > 0 {
+		got := string(buf[:n])
+		if got != "hello-tcp" {
+			t.Errorf("Expected echoed data 'hello-tcp', got: %s", got)
+		}
+	}
+
+	proxyRemote.Close()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Error("ProxyConnection did not complete")
+	}
+
+	c1.Close()
+	c2.Close()
+}
+
+func TestTCPProxyProxyConnectionOpenStreamError(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+	proxy := NewTCPProxy(s, 0, 0)
+
+	c1, c2 := net.Pipe()
+	defer c2.Close()
+	m := mux.New(c1, mux.DefaultConfig())
+	m.Close()
+
+	tunnel := &Tunnel{ID: "tun-tcpproxy-err"}
+	session := &Session{ID: "sess-tcpproxy-err", Mux: m}
+
+	proxyConn, proxyRemote := net.Pipe()
+	defer proxyRemote.Close()
+
+	err := proxy.ProxyConnection(proxyConn, tunnel, session)
+	if err == nil {
+		t.Fatal("Expected error when mux is closed")
+	}
+	if !strings.Contains(err.Error(), "open stream") {
+		t.Errorf("Expected 'open stream' in error, got: %v", err)
+	}
+}
+
+func TestTCPProxyProxyConnectionFrameWriteError(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+	proxy := NewTCPProxy(s, 0, 0)
+
+	c1, c2 := net.Pipe()
+	wfc := &writeFailConn{Conn: c1, writesLeft: 0}
+	m := mux.New(wfc, mux.DefaultConfig())
+	go io.Copy(io.Discard, c2)
+
+	tunnel := &Tunnel{ID: "tun-tcpproxy-fw-err"}
+	session := &Session{ID: "sess-tcpproxy-fw-err", Mux: m}
+
+	proxyConn, proxyRemote := net.Pipe()
+	defer proxyRemote.Close()
+
+	err := proxy.ProxyConnection(proxyConn, tunnel, session)
+	if err == nil {
+		t.Fatal("Expected error when frame write fails")
+	}
+	if !strings.Contains(err.Error(), "send stream open") {
+		t.Errorf("Expected 'send stream open' in error, got: %v", err)
+	}
+	c1.Close()
+	c2.Close()
+}
+
+// --- Test for HTTPProxy.ProxyRequest read error path ---
+
+func TestHTTPProxyProxyRequestReadError(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+	proxy := NewHTTPProxy(s, 5*time.Second)
+
+	c1, c2 := net.Pipe()
+	m := mux.New(c1, mux.DefaultConfig())
+	go m.Run()
+
+	clientMux := mux.New(c2, mux.DefaultConfig())
+	go clientMux.Run()
+
+	tunnel := &Tunnel{ID: "tun-proxy-read-err"}
+	session := &Session{ID: "sess-proxy-read-err", Mux: m}
+
+	// Accept stream, read the request, then reset the stream to cause ReadAll error
+	go func() {
+		stream, err := clientMux.AcceptStream()
+		if err != nil {
+			return
+		}
+		buf := make([]byte, 4096)
+		stream.Read(buf)
+		stream.Reset()
+	}()
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "http://test.wirerift.dev/", nil)
+
+	err := proxy.ProxyRequest(rr, req, tunnel, session)
+	if err == nil {
+		t.Fatal("Expected error from ProxyRequest when read fails")
+	}
+	if !strings.Contains(err.Error(), "read response") {
+		t.Errorf("Expected 'read response' in error, got: %v", err)
+	}
+
+	c1.Close()
+	c2.Close()
+}
+
+// --- Test for forwardWebSocket buffered data path ---
+
+// hijackableResponseWriterWithBufferedData pre-fills the bufio reader with data.
+type hijackableResponseWriterWithBufferedData struct {
+	httptest.ResponseRecorder
+	conn  net.Conn
+	bufrw *bufio.ReadWriter
+}
+
+func (h *hijackableResponseWriterWithBufferedData) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return h.conn, h.bufrw, nil
+}
+
+func TestForwardWebSocketBufferedDataPath(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	c1, c2 := net.Pipe()
+	m := mux.New(c1, mux.DefaultConfig())
+	go m.Run()
+
+	clientMux := mux.New(c2, mux.DefaultConfig())
+	go clientMux.Run()
+
+	tunnel := &Tunnel{ID: "tun-ws-bufdata", Type: proto.TunnelTypeHTTP, Subdomain: "wsbufdata", SessionID: "sess-ws-bufdata"}
+	session := &Session{ID: "sess-ws-bufdata", AccountID: "account-1", Mux: m}
+
+	// Accept the stream, read the upgrade request, send upgrade response, read data
+	receivedData := make(chan string, 1)
+	go func() {
+		stream, err := clientMux.AcceptStream()
+		if err != nil {
+			return
+		}
+		reader := bufio.NewReader(stream)
+		httpReq, err := http.ReadRequest(reader)
+		if err != nil {
+			stream.Close()
+			return
+		}
+		httpReq.Body.Close()
+		// Send upgrade
+		resp := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+		stream.Write([]byte(resp))
+		// Read data that comes through from the buffered reader
+		buf := make([]byte, 4096)
+		n, _ := stream.Read(buf)
+		if n > 0 {
+			receivedData <- string(buf[:n])
+		} else {
+			receivedData <- ""
+		}
+		stream.Close()
+	}()
+
+	// Create a pipe for the hijacked connection
+	edgeConn, edgeRemote := net.Pipe()
+
+	// Create a bufio.Reader that already has data buffered in it.
+	// We use io.MultiReader to prepend the pre-buffered data before the actual conn.
+	preloadData := "pre-buffered-ws-frame"
+	combinedReader := io.MultiReader(strings.NewReader(preloadData), edgeConn)
+	bufReader := bufio.NewReaderSize(combinedReader, 4096)
+	// Force the bufio reader to read and buffer the preload data
+	bufReader.Peek(len(preloadData))
+
+	bufWriter := bufio.NewWriter(edgeConn)
+	bufrw := bufio.NewReadWriter(bufReader, bufWriter)
+
+	hw := &hijackableResponseWriterWithBufferedData{
+		ResponseRecorder: *httptest.NewRecorder(),
+		conn:             edgeConn,
+		bufrw:            bufrw,
+	}
+
+	req := httptest.NewRequest("GET", "http://wsbufdata.wirerift.dev/ws", nil)
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+
+	done := make(chan struct{})
+	go func() {
+		s.forwardWebSocket(hw, req, session, tunnel)
+		close(done)
+	}()
+
+	// Read the upgrade response from the edge remote side
+	go func() {
+		buf := make([]byte, 4096)
+		edgeRemote.Read(buf)
+		time.Sleep(50 * time.Millisecond)
+		edgeRemote.Close()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Error("forwardWebSocket did not complete")
+		edgeRemote.Close()
+	}
+
+	// Verify the buffered data was forwarded
+	select {
+	case data := <-receivedData:
+		if !strings.Contains(data, preloadData) {
+			t.Errorf("Expected pre-buffered data to be forwarded, got: %q", data)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("Timed out waiting for received data")
+	}
+
+	c1.Close()
+	c2.Close()
 }

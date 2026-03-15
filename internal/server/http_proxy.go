@@ -3,7 +3,7 @@ package server
 import (
 	"bufio"
 	"bytes"
-	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -36,24 +36,37 @@ func NewHTTPProxy(server *Server, timeout time.Duration) *HTTPProxy {
 
 // ProxyRequest proxies an HTTP request through a tunnel.
 func (p *HTTPProxy) ProxyRequest(w http.ResponseWriter, r *http.Request, tunnel *Tunnel, session *Session) error {
-	// Get a buffer from pool
-	buf := p.pool.Get().([]byte)
-	defer p.pool.Put(buf)
+	stream, err := session.Mux.OpenStream()
+	if err != nil {
+		return fmt.Errorf("open stream: %w", err)
+	}
+	defer stream.Close()
 
-	// Serialize the request
-	var reqBuf bytes.Buffer
-	if err := r.Write(&reqBuf); err != nil {
-		return err
+	openFrame, _ := StreamOpenForHTTP(tunnel.ID, stream.ID(), r.RemoteAddr)
+	if err := session.Mux.GetFrameWriter().Write(openFrame); err != nil {
+		return fmt.Errorf("send stream open: %w", err)
 	}
 
-	// This is a placeholder - in the full implementation:
-	// 1. Create a new stream through the mux
-	// 2. Send STREAM_OPEN with metadata
-	// 3. Send HTTP request as STREAM_DATA
-	// 4. Read response from stream
-	// 5. Write response to client
+	reqData, err := SerializeRequest(r)
+	if err != nil {
+		return fmt.Errorf("serialize request: %w", err)
+	}
+	if _, err := stream.Write(reqData); err != nil {
+		return fmt.Errorf("write request: %w", err)
+	}
 
-	return errors.New("not implemented")
+	respData, err := io.ReadAll(stream)
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
+
+	resp, err := DeserializeResponse(respData)
+	if err != nil {
+		return fmt.Errorf("deserialize response: %w", err)
+	}
+	defer resp.Body.Close()
+
+	return WriteResponse(w, resp)
 }
 
 // HTTPRequest represents a serialized HTTP request for tunneling.

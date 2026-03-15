@@ -1,7 +1,7 @@
 package server
 
 import (
-	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -36,12 +36,31 @@ func NewTCPProxy(server *Server, bufferSize int, timeout time.Duration) *TCPProx
 func (p *TCPProxy) ProxyConnection(conn net.Conn, tunnel *Tunnel, session *Session) error {
 	defer conn.Close()
 
-	// This is a placeholder - in the full implementation:
-	// 1. Create a new stream through the mux
-	// 2. Send STREAM_OPEN with metadata
-	// 3. Bidirectional copy between conn and stream
+	stream, err := session.Mux.OpenStream()
+	if err != nil {
+		return fmt.Errorf("open stream: %w", err)
+	}
+	defer stream.Close()
 
-	return errors.New("not implemented")
+	openFrame, _ := StreamOpenForTCP(tunnel.ID, stream.ID(), conn.RemoteAddr().String())
+	if err := session.Mux.GetFrameWriter().Write(openFrame); err != nil {
+		return fmt.Errorf("send stream open: %w", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		io.CopyBuffer(stream, conn, make([]byte, p.bufferSize))
+		stream.Close()
+	}()
+	go func() {
+		defer wg.Done()
+		io.CopyBuffer(conn, stream, make([]byte, p.bufferSize))
+		conn.Close()
+	}()
+	wg.Wait()
+	return nil
 }
 
 // TCPTunnel represents an active TCP tunnel.

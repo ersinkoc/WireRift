@@ -94,6 +94,7 @@ type Tunnel struct {
 	Subdomain string
 	Port      int
 	client    *Client
+	request   *proto.TunnelRequest // original creation request for reconnect
 }
 
 // New creates a new client.
@@ -314,6 +315,7 @@ func (c *Client) openTunnel(req *proto.TunnelRequest) (*Tunnel, error) {
 		Subdomain: req.Subdomain,
 		Port:      req.RemotePort,
 		client:    c,
+		request:   req,
 	}
 
 	c.tunnels.Store(res.TunnelID, tunnel)
@@ -432,8 +434,40 @@ func (c *Client) reconnectLoop() {
 				continue
 			}
 
+			// Re-create tunnels from previous session
+			c.recreateTunnels()
+
+			// Restart stream handler for new connection
+			c.wg.Add(1)
+			go func() {
+				defer c.wg.Done()
+				c.handleStreams()
+			}()
+
 			interval = c.config.ReconnectInterval
 		}
+	}
+}
+
+// recreateTunnels re-creates all tunnels after a reconnect.
+func (c *Client) recreateTunnels() {
+	var oldTunnels []*Tunnel
+	c.tunnels.Range(func(key, value any) bool {
+		oldTunnels = append(oldTunnels, value.(*Tunnel))
+		c.tunnels.Delete(key)
+		return true
+	})
+
+	for _, t := range oldTunnels {
+		if t.request == nil {
+			continue
+		}
+		newTunnel, err := c.openTunnel(t.request)
+		if err != nil {
+			c.logger.Warn("failed to re-create tunnel", "id", t.ID, "error", err)
+			continue
+		}
+		c.logger.Info("tunnel re-created", "old_id", t.ID, "new_id", newTunnel.ID, "url", newTunnel.PublicURL)
 	}
 }
 

@@ -2,8 +2,11 @@ package server
 
 import (
 	"net"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/wirerift/wirerift/internal/mux"
 )
 
 func TestNewTCPTunnel(t *testing.T) {
@@ -215,24 +218,33 @@ func TestBidiCopy(t *testing.T) {
 	t.Logf("Written: %d, Read: %d", written, read)
 }
 
-// TestProxyConnectionNotImplemented tests that ProxyConnection returns not implemented
-func TestProxyConnectionNotImplemented(t *testing.T) {
-	server := New(DefaultConfig(), nil)
-	proxy := NewTCPProxy(server, 0, 0)
+// TestProxyConnectionOpenStreamError tests that ProxyConnection returns an error when the mux is closed.
+func TestProxyConnectionOpenStreamError(t *testing.T) {
+	srv := New(DefaultConfig(), nil)
+	proxy := NewTCPProxy(srv, 0, 0)
 
 	c1, c2 := net.Pipe()
 	defer c1.Close()
 	defer c2.Close()
 
+	// Create a mux with a pipe and close it immediately so OpenStream fails
+	mc1, mc2 := net.Pipe()
+	defer mc1.Close()
+	defer mc2.Close()
+
+	m := mux.New(mc1, mux.DefaultConfig())
+	go m.Run()
+	m.Close()
+
 	tunnel := &Tunnel{ID: "test-tunnel"}
-	session := &Session{ID: "test-session"}
+	session := &Session{ID: "test-session", Mux: m}
 
 	err := proxy.ProxyConnection(c1, tunnel, session)
 	if err == nil {
-		t.Error("Expected error from unimplemented ProxyConnection")
+		t.Error("Expected error from ProxyConnection with closed mux")
 	}
-	if err.Error() != "not implemented" {
-		t.Errorf("Expected 'not implemented' error, got: %v", err)
+	if !strings.Contains(err.Error(), "open stream") {
+		t.Errorf("Expected 'open stream' error, got: %v", err)
 	}
 }
 

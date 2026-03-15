@@ -1951,6 +1951,343 @@ func TestOpenTunnelUnexpectedFrameType(t *testing.T) {
 	client.conn.Close()
 }
 
+// --- recreateTunnels() tests ---
+
+func TestRecreateTunnelsSuccess(t *testing.T) {
+	client, serverMux := makeConnectedClient(t)
+
+	// Respond to tunnel requests on the server side
+	go func() {
+		count := 0
+		for {
+			select {
+			case frame, ok := <-serverMux.ControlFrame():
+				if !ok {
+					return
+				}
+				if frame.Type != proto.FrameTunnelReq {
+					continue
+				}
+				count++
+				var req proto.TunnelRequest
+				if err := proto.DecodeJSONPayload(frame, &req); err != nil {
+					continue
+				}
+				resp := &proto.TunnelResponse{
+					OK:        true,
+					TunnelID:  fmt.Sprintf("new-tun-%d", count),
+					Type:      req.Type,
+					PublicURL: fmt.Sprintf("https://new-%d.wirerift.dev", count),
+				}
+				respFrame, _ := proto.EncodeJSONPayload(proto.FrameTunnelRes, proto.ControlStreamID, resp)
+				serverMux.GetFrameWriter().Write(respFrame)
+			case <-serverMux.Done():
+				return
+			}
+		}
+	}()
+
+	// Store old tunnels with request info
+	client.tunnels.Store("old-tun-1", &Tunnel{
+		ID:        "old-tun-1",
+		Type:      proto.TunnelTypeHTTP,
+		LocalAddr: "localhost:3000",
+		Subdomain: "myapp",
+		client:    client,
+		request: &proto.TunnelRequest{
+			Type:      proto.TunnelTypeHTTP,
+			LocalAddr: "localhost:3000",
+			Subdomain: "myapp",
+		},
+	})
+	client.tunnels.Store("old-tun-2", &Tunnel{
+		ID:        "old-tun-2",
+		Type:      proto.TunnelTypeTCP,
+		LocalAddr: "localhost:5432",
+		Port:      5432,
+		client:    client,
+		request: &proto.TunnelRequest{
+			Type:       proto.TunnelTypeTCP,
+			LocalAddr:  "localhost:5432",
+			RemotePort: 5432,
+		},
+	})
+
+	// Recreate tunnels
+	client.recreateTunnels()
+
+	// Verify old tunnels are removed
+	if _, ok := client.tunnels.Load("old-tun-1"); ok {
+		t.Error("old tunnel old-tun-1 should be removed")
+	}
+	if _, ok := client.tunnels.Load("old-tun-2"); ok {
+		t.Error("old tunnel old-tun-2 should be removed")
+	}
+
+	// Verify new tunnels are created
+	var tunnelCount int
+	client.tunnels.Range(func(key, value any) bool {
+		tunnelCount++
+		tun := value.(*Tunnel)
+		if tun.request == nil {
+			t.Error("re-created tunnel should have request stored")
+		}
+		return true
+	})
+	if tunnelCount != 2 {
+		t.Errorf("expected 2 re-created tunnels, got %d", tunnelCount)
+	}
+
+	client.conn.Close()
+}
+
+func TestRecreateTunnelsSkipsNilRequest(t *testing.T) {
+	client, serverMux := makeConnectedClient(t)
+
+	// Drain control frames
+	go func() {
+		for {
+			select {
+			case <-serverMux.ControlFrame():
+			case <-serverMux.Done():
+				return
+			}
+		}
+	}()
+
+	// Store a tunnel without a request (should be skipped)
+	client.tunnels.Store("old-tun-nil", &Tunnel{
+		ID:        "old-tun-nil",
+		Type:      proto.TunnelTypeHTTP,
+		LocalAddr: "localhost:3000",
+		client:    client,
+		request:   nil,
+	})
+
+	client.recreateTunnels()
+
+	// Verify old tunnel is removed and no new tunnel is created
+	var tunnelCount int
+	client.tunnels.Range(func(key, value any) bool {
+		tunnelCount++
+		return true
+	})
+	if tunnelCount != 0 {
+		t.Errorf("expected 0 tunnels after recreate with nil request, got %d", tunnelCount)
+	}
+
+	client.conn.Close()
+}
+
+func TestRecreateTunnelsPartialFailure(t *testing.T) {
+	client, serverMux := makeConnectedClient(t)
+
+	// Respond to only the first tunnel request, fail the second
+	go func() {
+		count := 0
+		for {
+			select {
+			case frame, ok := <-serverMux.ControlFrame():
+				if !ok {
+					return
+				}
+				if frame.Type != proto.FrameTunnelReq {
+					continue
+				}
+				count++
+				var resp *proto.TunnelResponse
+				if count == 1 {
+					resp = &proto.TunnelResponse{
+						OK:        true,
+						TunnelID:  "new-tun-ok",
+						Type:      proto.TunnelTypeHTTP,
+						PublicURL: "https://ok.wirerift.dev",
+					}
+				} else {
+					resp = &proto.TunnelResponse{
+						OK:    false,
+						Error: "quota exceeded",
+					}
+				}
+				respFrame, _ := proto.EncodeJSONPayload(proto.FrameTunnelRes, proto.ControlStreamID, resp)
+				serverMux.GetFrameWriter().Write(respFrame)
+			case <-serverMux.Done():
+				return
+			}
+		}
+	}()
+
+	// Store two tunnels
+	client.tunnels.Store("old-a", &Tunnel{
+		ID:      "old-a",
+		Type:    proto.TunnelTypeHTTP,
+		client:  client,
+		request: &proto.TunnelRequest{Type: proto.TunnelTypeHTTP, LocalAddr: "localhost:3000"},
+	})
+	client.tunnels.Store("old-b", &Tunnel{
+		ID:      "old-b",
+		Type:    proto.TunnelTypeHTTP,
+		client:  client,
+		request: &proto.TunnelRequest{Type: proto.TunnelTypeHTTP, LocalAddr: "localhost:4000"},
+	})
+
+	client.recreateTunnels()
+
+	// Only one tunnel should succeed
+	var tunnelCount int
+	client.tunnels.Range(func(key, value any) bool {
+		tunnelCount++
+		return true
+	})
+	if tunnelCount != 1 {
+		t.Errorf("expected 1 tunnel after partial failure, got %d", tunnelCount)
+	}
+
+	client.conn.Close()
+}
+
+func TestRecreateTunnelsEmpty(t *testing.T) {
+	client, serverMux := makeConnectedClient(t)
+
+	// Drain control frames
+	go func() {
+		for {
+			select {
+			case <-serverMux.ControlFrame():
+			case <-serverMux.Done():
+				return
+			}
+		}
+	}()
+
+	// No tunnels stored - should be a no-op
+	client.recreateTunnels()
+
+	var tunnelCount int
+	client.tunnels.Range(func(key, value any) bool {
+		tunnelCount++
+		return true
+	})
+	if tunnelCount != 0 {
+		t.Errorf("expected 0 tunnels after recreate on empty, got %d", tunnelCount)
+	}
+
+	client.conn.Close()
+}
+
+func TestReconnectLoopRecreatesTunnels(t *testing.T) {
+	// Start a mock server that the client can reconnect to
+	server := newMockServer(t)
+	defer server.Close()
+
+	client, serverConn := makeConnectedClientRaw(t)
+	client.config.Reconnect = true
+	client.config.ServerAddr = server.addr
+	client.config.Token = server.token
+	client.config.ReconnectInterval = 20 * time.Millisecond
+	client.config.MaxReconnectInterval = 100 * time.Millisecond
+
+	// Store a tunnel with a request before disconnecting
+	client.tunnels.Store("pre-reconnect-tun", &Tunnel{
+		ID:        "pre-reconnect-tun",
+		Type:      proto.TunnelTypeHTTP,
+		LocalAddr: "localhost:8080",
+		Subdomain: "myapp",
+		client:    client,
+		request: &proto.TunnelRequest{
+			Type:      proto.TunnelTypeHTTP,
+			LocalAddr: "localhost:8080",
+			Subdomain: "myapp",
+		},
+	})
+
+	// Close mux to trigger reconnect
+	client.mux.Close()
+
+	// Let reconnect succeed, tunnel get re-created, then cancel
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		client.cancel()
+	}()
+
+	client.reconnectLoop()
+
+	// Verify the old tunnel ID is gone
+	if _, ok := client.tunnels.Load("pre-reconnect-tun"); ok {
+		t.Error("old tunnel ID should not exist after reconnect")
+	}
+
+	// Verify a new tunnel was created
+	var tunnelCount int
+	client.tunnels.Range(func(key, value any) bool {
+		tunnelCount++
+		tun := value.(*Tunnel)
+		if tun.request == nil {
+			t.Error("re-created tunnel should have request stored")
+		}
+		if tun.LocalAddr != "localhost:8080" {
+			t.Errorf("re-created tunnel LocalAddr = %q, want localhost:8080", tun.LocalAddr)
+		}
+		return true
+	})
+	if tunnelCount != 1 {
+		t.Errorf("expected 1 re-created tunnel, got %d", tunnelCount)
+	}
+
+	serverConn.Close()
+}
+
+func TestOpenTunnelStoresRequest(t *testing.T) {
+	client, serverMux := makeConnectedClient(t)
+
+	go func() {
+		select {
+		case frame, ok := <-serverMux.ControlFrame():
+			if !ok {
+				return
+			}
+			if frame.Type != proto.FrameTunnelReq {
+				return
+			}
+			resp := &proto.TunnelResponse{
+				OK:        true,
+				TunnelID:  "tun-req-check",
+				Type:      proto.TunnelTypeHTTP,
+				PublicURL: "https://check.wirerift.dev",
+			}
+			respFrame, _ := proto.EncodeJSONPayload(proto.FrameTunnelRes, proto.ControlStreamID, resp)
+			serverMux.GetFrameWriter().Write(respFrame)
+		case <-serverMux.Done():
+		}
+		<-serverMux.Done()
+	}()
+
+	req := &proto.TunnelRequest{
+		Type:      proto.TunnelTypeHTTP,
+		LocalAddr: "localhost:9090",
+		Subdomain: "check",
+	}
+	tunnel, err := client.openTunnel(req)
+	if err != nil {
+		t.Fatalf("openTunnel failed: %v", err)
+	}
+
+	if tunnel.request == nil {
+		t.Fatal("tunnel.request should not be nil")
+	}
+	if tunnel.request.Type != proto.TunnelTypeHTTP {
+		t.Errorf("tunnel.request.Type = %v, want HTTP", tunnel.request.Type)
+	}
+	if tunnel.request.LocalAddr != "localhost:9090" {
+		t.Errorf("tunnel.request.LocalAddr = %q, want localhost:9090", tunnel.request.LocalAddr)
+	}
+	if tunnel.request.Subdomain != "check" {
+		t.Errorf("tunnel.request.Subdomain = %q, want check", tunnel.request.Subdomain)
+	}
+
+	client.conn.Close()
+}
+
 // Suppress unused import warnings - ensure all imports are used
 var _ = fmt.Sprintf
 var _ = bufio.NewReader

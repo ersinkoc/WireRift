@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"crypto/tls"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wirerift/wirerift/internal/mux"
 )
 
 func TestSerializeRequest(t *testing.T) {
@@ -197,8 +200,8 @@ func TestNewHTTPProxyBufferPool(t *testing.T) {
 	proxy.pool.Put(buf)
 }
 
-// TestProxyRequestNotImplemented tests that ProxyRequest returns not implemented error
-func TestProxyRequestNotImplemented(t *testing.T) {
+// TestProxyRequestOpenStreamError tests that ProxyRequest returns an error when the mux is nil/closed.
+func TestProxyRequestOpenStreamError(t *testing.T) {
 	srv := New(DefaultConfig(), nil)
 	proxy := NewHTTPProxy(srv, 30*time.Second)
 
@@ -207,14 +210,24 @@ func TestProxyRequestNotImplemented(t *testing.T) {
 	req := httptest.NewRequest("GET", "http://example.com/test", nil)
 
 	tunnel := &Tunnel{ID: "test-tunnel"}
-	session := &Session{ID: "test-session"}
+
+	// Create a mux with a pipe so we can close it to trigger an error
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	m := mux.New(c1, mux.DefaultConfig())
+	go m.Run()
+	m.Close() // close immediately so OpenStream fails
+
+	session := &Session{ID: "test-session", Mux: m}
 
 	err := proxy.ProxyRequest(rw, req, tunnel, session)
 	if err == nil {
-		t.Error("Expected error from unimplemented ProxyRequest")
+		t.Error("Expected error from ProxyRequest with closed mux")
 	}
-	if !strings.Contains(err.Error(), "not implemented") {
-		t.Errorf("Expected 'not implemented' error, got: %v", err)
+	if !strings.Contains(err.Error(), "open stream") {
+		t.Errorf("Expected 'open stream' error, got: %v", err)
 	}
 }
 
@@ -415,20 +428,37 @@ func TestSerializeRequestWithErrorBody(t *testing.T) {
 	}
 }
 
-// TestProxyRequestWriteError tests ProxyRequest when request serialization fails
-func TestProxyRequestWriteError(t *testing.T) {
+// TestProxyRequestSerializeError tests ProxyRequest when request serialization fails
+func TestProxyRequestSerializeError(t *testing.T) {
 	srv := New(DefaultConfig(), nil)
 	proxy := NewHTTPProxy(srv, 30*time.Second)
 
+	// Create a mux with a pipe so OpenStream succeeds
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	m := mux.New(c1, mux.DefaultConfig())
+	go m.Run()
+	defer m.Close()
+
+	// Drain frames on the other side so writes don't block
+	m2 := mux.New(c2, mux.DefaultConfig())
+	go m2.Run()
+	defer m2.Close()
+
 	rw := httptest.NewRecorder()
-	// Create a request with a body that errors on read, which causes r.Write to fail
+	// Create a request with a body that errors on read, which causes SerializeRequest to fail
 	req := httptest.NewRequest("POST", "http://example.com/test", &errReader{})
 
 	tunnel := &Tunnel{ID: "test-tunnel"}
-	session := &Session{ID: "test-session"}
+	session := &Session{ID: "test-session", Mux: m}
 
 	err := proxy.ProxyRequest(rw, req, tunnel, session)
 	if err == nil {
 		t.Error("Expected error from ProxyRequest with failing body")
+	}
+	if !strings.Contains(err.Error(), "serialize request") {
+		t.Errorf("Expected 'serialize request' error, got: %v", err)
 	}
 }
