@@ -1039,3 +1039,281 @@ func TestDoStartWithWhitelistAndPIN(t *testing.T) {
 		t.Fatalf("doStart with whitelist/pin failed: %v", err)
 	}
 }
+
+// --- doServe tests ---
+
+func TestDoServe_NoDirectory(t *testing.T) {
+	assertErrContains(t, doServe(context.Background(), []string{"wirerift", "serve"}), "missing directory")
+}
+
+func TestDoServe_FlagParseError(t *testing.T) {
+	assertErr(t, doServe(context.Background(), []string{"wirerift", "serve", "-unknown-flag"}))
+}
+
+func TestDoServe_DirectoryNotFound(t *testing.T) {
+	assertErrContains(t, doServe(context.Background(), []string{"wirerift", "serve", "/nonexistent/path/xyz"}), "cannot access directory")
+}
+
+func TestDoServe_NotADirectory(t *testing.T) {
+	// Create a regular file, not a directory
+	f := filepath.Join(t.TempDir(), "notadir.txt")
+	os.WriteFile(f, []byte("hello"), 0644)
+	assertErrContains(t, doServe(context.Background(), []string{"wirerift", "serve", f}), "is not a directory")
+}
+
+func TestDoServe_ConnectFail(t *testing.T) {
+	dir := t.TempDir()
+	assertErrContains(t, doServe(context.Background(), []string{"wirerift", "serve", "-server", "127.0.0.1:1", dir}), "failed to connect")
+}
+
+func TestDoServe_ConnectFail_WithFlags(t *testing.T) {
+	dir := t.TempDir()
+	assertErrContains(t, doServe(context.Background(), []string{
+		"wirerift", "serve",
+		"-server", "127.0.0.1:1",
+		"-token", "tok",
+		"-subdomain", "myapp",
+		"-pin", "1234",
+		"-whitelist", "1.2.3.4",
+		"-inspect",
+		"-header", "X-Test:value",
+		"-v",
+		dir,
+	}), "failed to connect")
+}
+
+func TestDoServe_ConnectFail_WithAuth(t *testing.T) {
+	dir := t.TempDir()
+	assertErrContains(t, doServe(context.Background(), []string{
+		"wirerift", "serve",
+		"-server", "127.0.0.1:1",
+		"-auth", "user:pass",
+		dir,
+	}), "failed to connect")
+}
+
+func TestDoServe_InvalidAuth(t *testing.T) {
+	defer lockGOMAXPROCS()()
+
+	addr, cleanup := startMockTunnelServer(t)
+	defer cleanup()
+
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	assertErrContains(t, doServe(ctx, []string{
+		"wirerift", "serve",
+		"-server", addr,
+		"-auth", "invalidnocolon",
+		dir,
+	}), "invalid -auth format")
+}
+
+func TestDoServeSuccess(t *testing.T) {
+	defer lockGOMAXPROCS()()
+
+	addr, cleanup := startMockTunnelServer(t)
+	defer cleanup()
+
+	dir := t.TempDir()
+	// Create a file in the directory to serve
+	os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>test</html>"), 0644)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+
+	args := []string{"wirerift", "serve", "-server", addr, dir}
+	err := doServe(ctx, args)
+	if err != nil {
+		t.Fatalf("doServe failed: %v", err)
+	}
+}
+
+func TestDoServeSuccessWithSubdomain(t *testing.T) {
+	defer lockGOMAXPROCS()()
+
+	addr, cleanup := startMockTunnelServer(t)
+	defer cleanup()
+
+	dir := t.TempDir()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+
+	args := []string{"wirerift", "serve", "-server", addr, "-subdomain", "myapp", "-v", dir}
+	err := doServe(ctx, args)
+	if err != nil {
+		t.Fatalf("doServe with subdomain failed: %v", err)
+	}
+}
+
+func TestDoServeTunnelCreateFail(t *testing.T) {
+	defer lockGOMAXPROCS()()
+
+	addr, cleanup := startMockTunnelServerWithTunnelError(t)
+	defer cleanup()
+
+	dir := t.TempDir()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	args := []string{"wirerift", "serve", "-server", addr, dir}
+	err := doServe(ctx, args)
+	if err == nil {
+		t.Fatal("Expected error from doServe with tunnel failure")
+	}
+	if !strings.Contains(err.Error(), "failed to create tunnel") {
+		t.Fatalf("Expected 'failed to create tunnel' error, got: %v", err)
+	}
+}
+
+func TestRun_Serve_Error(t *testing.T) {
+	assertErr(t, run([]string{"wirerift", "serve"}))
+}
+
+// --- parseHeaders tests ---
+
+func TestParseHeaders(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected map[string]string
+	}{
+		{
+			name:     "single header",
+			input:    "X-Robots:noindex",
+			expected: map[string]string{"X-Robots": "noindex"},
+		},
+		{
+			name:     "multiple headers",
+			input:    "X-Robots:noindex,Cache-Control:no-store",
+			expected: map[string]string{"X-Robots": "noindex", "Cache-Control": "no-store"},
+		},
+		{
+			name:     "with spaces",
+			input:    " X-Foo : bar , X-Baz : qux ",
+			expected: map[string]string{"X-Foo": "bar", "X-Baz": "qux"},
+		},
+		{
+			name:     "empty string",
+			input:    "",
+			expected: map[string]string{},
+		},
+		{
+			name:     "no colon entry ignored",
+			input:    "novalue,X-Valid:yes",
+			expected: map[string]string{"X-Valid": "yes"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseHeaders(tt.input)
+			for k, v := range tt.expected {
+				if result[k] != v {
+					t.Errorf("parseHeaders(%q)[%q] = %q, want %q", tt.input, k, result[k], v)
+				}
+			}
+			// Check no extra keys (for entries that should not appear)
+			for k := range result {
+				if _, ok := tt.expected[k]; !ok {
+					t.Errorf("parseHeaders(%q) has unexpected key %q", tt.input, k)
+				}
+			}
+		})
+	}
+}
+
+// --- loadConfig with auth/inspect/headers ---
+
+func TestLoadConfigWithAuthInspectHeaders(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "full.yaml")
+	os.WriteFile(f, []byte("server: test.server:4443\ntoken: tok\n\ntunnels:\n  - type: http\n    local_port: 8080\n    subdomain: myapp\n    auth: user:pass\n    inspect: true\n    headers: X-Robots:noindex,Cache-Control:no-store\n"), 0644)
+	cfg, err := loadConfig(f)
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+	if len(cfg.Tunnels) != 1 {
+		t.Fatalf("Expected 1 tunnel, got %d", len(cfg.Tunnels))
+	}
+	tun := cfg.Tunnels[0]
+	if tun.Auth != "user:pass" {
+		t.Errorf("Auth = %q, want user:pass", tun.Auth)
+	}
+	if !tun.Inspect {
+		t.Error("Inspect should be true")
+	}
+	if tun.Headers != "X-Robots:noindex,Cache-Control:no-store" {
+		t.Errorf("Headers = %q", tun.Headers)
+	}
+}
+
+func TestDoStartWithAuthAndInspect(t *testing.T) {
+	defer lockGOMAXPROCS()()
+
+	addr, cleanup := startMockTunnelServer(t)
+	defer cleanup()
+
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "test.yaml")
+	configContent := fmt.Sprintf("server: %s\ntoken: test\n\ntunnels:\n  - type: http\n    local_port: 8080\n    subdomain: test\n    auth: admin:secret\n    inspect: true\n    headers: X-Custom:val\n", addr)
+	os.WriteFile(configFile, []byte(configContent), 0644)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		cancel()
+	}()
+
+	args := []string{"wirerift", "start", configFile}
+	err := doStart(ctx, args)
+	if err != nil {
+		t.Fatalf("doStart with auth/inspect/headers failed: %v", err)
+	}
+}
+
+func TestDoHTTP_WithAuthAndInspect(t *testing.T) {
+	defer lockGOMAXPROCS()()
+
+	addr, cleanup := startMockTunnelServer(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+
+	args := []string{"wirerift", "http", "-server", addr, "-auth", "user:pass", "-inspect", "-header", "X-Robots:noindex", "8080"}
+	err := doHTTP(ctx, args)
+	if err != nil {
+		t.Fatalf("doHTTP with auth/inspect/header failed: %v", err)
+	}
+}
+
+func TestDoHTTP_InvalidAuth(t *testing.T) {
+	defer lockGOMAXPROCS()()
+
+	addr, cleanup := startMockTunnelServer(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	args := []string{"wirerift", "http", "-server", addr, "-auth", "invalidnocolon", "8080"}
+	err := doHTTP(ctx, args)
+	if err == nil {
+		t.Fatal("Expected error for invalid -auth format")
+	}
+	if !strings.Contains(err.Error(), "invalid -auth format") {
+		t.Fatalf("Expected 'invalid -auth format' error, got: %v", err)
+	}
+}

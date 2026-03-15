@@ -4038,3 +4038,316 @@ func TestACMEChallengeRoutingDisabled(t *testing.T) {
 		t.Errorf("Status = %d, want 400", resp.StatusCode)
 	}
 }
+
+// ─── Inspector / Request Log / Replay / getTunnelByID tests ──────────
+
+func TestLogRequest(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	tunnel := &Tunnel{
+		ID:      "tun-test-1",
+		Inspect: true,
+	}
+
+	// Create a fake request
+	req := httptest.NewRequest("GET", "/api/data", nil)
+	req.Header.Set("X-Custom", "value1")
+
+	// Create an inspectResponseWriter
+	rec := httptest.NewRecorder()
+	iw := &inspectResponseWriter{
+		ResponseWriter: rec,
+		customHeaders:  map[string]string{"X-Response": "resp-val"},
+	}
+	iw.WriteHeader(http.StatusOK)
+
+	start := time.Now().Add(-50 * time.Millisecond)
+	s.logRequest(tunnel, req, iw, "192.168.1.100", start)
+
+	// Verify log was captured
+	logs := s.GetRequestLogs("", 10)
+	if len(logs) != 1 {
+		t.Fatalf("Expected 1 log, got %d", len(logs))
+	}
+
+	log := logs[0]
+	if log.TunnelID != "tun-test-1" {
+		t.Errorf("TunnelID = %q, want tun-test-1", log.TunnelID)
+	}
+	if log.Method != "GET" {
+		t.Errorf("Method = %q, want GET", log.Method)
+	}
+	if log.Path != "/api/data" {
+		t.Errorf("Path = %q, want /api/data", log.Path)
+	}
+	if log.StatusCode != http.StatusOK {
+		t.Errorf("StatusCode = %d, want 200", log.StatusCode)
+	}
+	if log.ClientIP != "192.168.1.100" {
+		t.Errorf("ClientIP = %q, want 192.168.1.100", log.ClientIP)
+	}
+	if log.Duration <= 0 {
+		t.Error("Duration should be positive")
+	}
+	if log.ReqHeaders["X-Custom"] != "value1" {
+		t.Errorf("ReqHeaders[X-Custom] = %q, want value1", log.ReqHeaders["X-Custom"])
+	}
+	if log.ID == "" {
+		t.Error("Log ID should not be empty")
+	}
+}
+
+func TestLogRequestMaxLogs(t *testing.T) {
+	cfg := DefaultConfig()
+	s := New(cfg, nil)
+	s.maxLogs = 5
+
+	tunnel := &Tunnel{ID: "tun-max", Inspect: true}
+
+	for i := 0; i < 10; i++ {
+		req := httptest.NewRequest("GET", fmt.Sprintf("/path/%d", i), nil)
+		rec := httptest.NewRecorder()
+		iw := &inspectResponseWriter{
+			ResponseWriter: rec,
+			customHeaders:  map[string]string{},
+		}
+		iw.WriteHeader(200)
+		s.logRequest(tunnel, req, iw, "1.2.3.4", time.Now())
+	}
+
+	// Should keep only last 5
+	s.logMu.RLock()
+	count := len(s.requestLogs)
+	s.logMu.RUnlock()
+
+	if count != 5 {
+		t.Errorf("Expected 5 logs (maxLogs), got %d", count)
+	}
+}
+
+func TestGetRequestLogsWithTunnelFilter(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	tunnel1 := &Tunnel{ID: "tun-a", Inspect: true}
+	tunnel2 := &Tunnel{ID: "tun-b", Inspect: true}
+
+	// Log requests for two different tunnels
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest("GET", fmt.Sprintf("/a/%d", i), nil)
+		rec := httptest.NewRecorder()
+		iw := &inspectResponseWriter{ResponseWriter: rec, customHeaders: map[string]string{}}
+		iw.WriteHeader(200)
+		s.logRequest(tunnel1, req, iw, "1.1.1.1", time.Now())
+	}
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest("POST", fmt.Sprintf("/b/%d", i), nil)
+		rec := httptest.NewRecorder()
+		iw := &inspectResponseWriter{ResponseWriter: rec, customHeaders: map[string]string{}}
+		iw.WriteHeader(201)
+		s.logRequest(tunnel2, req, iw, "2.2.2.2", time.Now())
+	}
+
+	// No filter - all 8
+	all := s.GetRequestLogs("", 100)
+	if len(all) != 8 {
+		t.Errorf("Expected 8 total logs, got %d", len(all))
+	}
+
+	// Filter by tun-a
+	logsA := s.GetRequestLogs("tun-a", 100)
+	if len(logsA) != 3 {
+		t.Errorf("Expected 3 logs for tun-a, got %d", len(logsA))
+	}
+	for _, l := range logsA {
+		if l.TunnelID != "tun-a" {
+			t.Errorf("Filtered log has TunnelID = %q, want tun-a", l.TunnelID)
+		}
+	}
+
+	// Filter by tun-b
+	logsB := s.GetRequestLogs("tun-b", 100)
+	if len(logsB) != 5 {
+		t.Errorf("Expected 5 logs for tun-b, got %d", len(logsB))
+	}
+
+	// Filter by nonexistent tunnel
+	logsNone := s.GetRequestLogs("tun-nonexistent", 100)
+	if len(logsNone) != 0 {
+		t.Errorf("Expected 0 logs for nonexistent tunnel, got %d", len(logsNone))
+	}
+
+	// Test limit
+	limited := s.GetRequestLogs("", 3)
+	if len(limited) != 3 {
+		t.Errorf("Expected 3 logs with limit=3, got %d", len(limited))
+	}
+}
+
+func TestGetRequestLogsNewestFirst(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	tunnel := &Tunnel{ID: "tun-order", Inspect: true}
+
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest("GET", fmt.Sprintf("/path/%d", i), nil)
+		rec := httptest.NewRecorder()
+		iw := &inspectResponseWriter{ResponseWriter: rec, customHeaders: map[string]string{}}
+		iw.WriteHeader(200)
+		s.logRequest(tunnel, req, iw, "1.1.1.1", time.Now())
+	}
+
+	logs := s.GetRequestLogs("", 10)
+	if len(logs) != 3 {
+		t.Fatalf("Expected 3 logs, got %d", len(logs))
+	}
+	// Newest should be first (last logged path is /path/2)
+	if logs[0].Path != "/path/2" {
+		t.Errorf("First log path = %q, want /path/2 (newest first)", logs[0].Path)
+	}
+	if logs[2].Path != "/path/0" {
+		t.Errorf("Last log path = %q, want /path/0 (oldest last)", logs[2].Path)
+	}
+}
+
+func TestGetRequestLogsZeroLimit(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	tunnel := &Tunnel{ID: "tun-z", Inspect: true}
+
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest("GET", "/z", nil)
+		rec := httptest.NewRecorder()
+		iw := &inspectResponseWriter{ResponseWriter: rec, customHeaders: map[string]string{}}
+		iw.WriteHeader(200)
+		s.logRequest(tunnel, req, iw, "1.1.1.1", time.Now())
+	}
+
+	// limit <= 0 should return all
+	logs := s.GetRequestLogs("", 0)
+	if len(logs) != 3 {
+		t.Errorf("Expected 3 logs with limit=0 (all), got %d", len(logs))
+	}
+}
+
+func TestReplayRequestNonexistentLogID(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	_, err := s.ReplayRequest("nonexistent-id")
+	if err == nil {
+		t.Fatal("Expected error for nonexistent log ID")
+	}
+	if !strings.Contains(err.Error(), "request log not found") {
+		t.Errorf("Expected 'request log not found' error, got: %v", err)
+	}
+}
+
+func TestReplayRequestTunnelNotFound(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	// Inject a log entry directly
+	s.logMu.Lock()
+	s.requestLogs = append(s.requestLogs, RequestLog{
+		ID:       "req_test123",
+		TunnelID: "tun-gone",
+		Method:   "GET",
+		Path:     "/test",
+	})
+	s.logMu.Unlock()
+
+	_, err := s.ReplayRequest("req_test123")
+	if err == nil {
+		t.Fatal("Expected error for nonexistent tunnel")
+	}
+	if !strings.Contains(err.Error(), "tunnel not found") {
+		t.Errorf("Expected 'tunnel not found', got: %v", err)
+	}
+}
+
+func TestGetTunnelByID(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	// No tunnels - should return false
+	_, ok := s.getTunnelByID("nonexistent")
+	if ok {
+		t.Error("Expected false for nonexistent tunnel")
+	}
+
+	// Store a tunnel
+	tunnel1 := &Tunnel{
+		ID:        "tun-find-1",
+		Subdomain: "findme",
+	}
+	s.tunnels.Store("findme", tunnel1)
+
+	// Find by ID
+	found, ok := s.getTunnelByID("tun-find-1")
+	if !ok {
+		t.Error("Expected to find tunnel tun-find-1")
+	}
+	if found.Subdomain != "findme" {
+		t.Errorf("Subdomain = %q, want findme", found.Subdomain)
+	}
+
+	// Store another tunnel
+	tunnel2 := &Tunnel{
+		ID:        "tun-find-2",
+		Subdomain: "second",
+	}
+	s.tunnels.Store("second", tunnel2)
+
+	// Find second tunnel
+	found2, ok := s.getTunnelByID("tun-find-2")
+	if !ok {
+		t.Error("Expected to find tunnel tun-find-2")
+	}
+	if found2.ID != "tun-find-2" {
+		t.Errorf("ID = %q, want tun-find-2", found2.ID)
+	}
+
+	// Search for ID that doesn't match any tunnel
+	_, ok = s.getTunnelByID("tun-nope")
+	if ok {
+		t.Error("Should not find nonexistent tunnel ID")
+	}
+}
+
+func TestInspectResponseWriterStatusCapture(t *testing.T) {
+	rec := httptest.NewRecorder()
+	iw := &inspectResponseWriter{
+		ResponseWriter: rec,
+		customHeaders:  map[string]string{"X-Custom": "test"},
+	}
+
+	iw.WriteHeader(http.StatusNotFound)
+	if iw.statusCode != http.StatusNotFound {
+		t.Errorf("statusCode = %d, want 404", iw.statusCode)
+	}
+	if !iw.written {
+		t.Error("written should be true after WriteHeader")
+	}
+
+	// Second WriteHeader should be ignored
+	iw.WriteHeader(http.StatusOK)
+	if iw.statusCode != http.StatusNotFound {
+		t.Errorf("statusCode changed to %d, should remain 404", iw.statusCode)
+	}
+
+	// Check custom header was injected
+	if rec.Header().Get("X-Custom") != "test" {
+		t.Errorf("Custom header not injected: %v", rec.Header())
+	}
+}
+
+func TestInspectResponseWriterImplicitOK(t *testing.T) {
+	rec := httptest.NewRecorder()
+	iw := &inspectResponseWriter{
+		ResponseWriter: rec,
+		customHeaders:  map[string]string{},
+	}
+
+	// Write without explicit WriteHeader should default to 200
+	iw.Write([]byte("hello"))
+	if iw.statusCode != http.StatusOK {
+		t.Errorf("statusCode = %d, want 200 (implicit)", iw.statusCode)
+	}
+}
