@@ -1,309 +1,279 @@
 package integration
 
 import (
-	"errors"
+	"fmt"
+	"io"
 	"net"
-	"sync"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/wirerift/wirerift/internal/auth"
 	"github.com/wirerift/wirerift/internal/client"
-	"github.com/wirerift/wirerift/internal/mux"
-	"github.com/wirerift/wirerift/internal/proto"
 	"github.com/wirerift/wirerift/internal/server"
 )
 
-// TestMuxRoundTrip tests basic mux communication
-func TestMuxRoundTrip(t *testing.T) {
-	// Create a pipe for client-server communication
-	serverConn, clientConn := net.Pipe()
-	defer serverConn.Close()
-	defer clientConn.Close()
+// TestEndToEndHTTPTunnel tests the complete HTTP tunnel flow:
+// local service <- client <- mux <- server <- edge HTTP request
+func TestEndToEndHTTPTunnel(t *testing.T) {
+	// 1. Start a local HTTP service (simulates user's app)
+	localService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Test", "wirerift")
+		w.WriteHeader(200)
+		fmt.Fprintf(w, "Hello from %s %s", r.Method, r.URL.Path)
+	}))
+	defer localService.Close()
 
-	var wg sync.WaitGroup
-	wg.Add(2)
+	// 2. Start the tunnel server
+	authMgr := auth.NewManager()
+	srvCfg := server.DefaultConfig()
+	srvCfg.ControlAddr = "127.0.0.1:0"
+	srvCfg.HTTPAddr = "127.0.0.1:0"
+	srvCfg.AuthManager = authMgr
 
-	// Server side
-	go func() {
-		defer wg.Done()
-		// Read magic
-		if err := proto.ReadMagic(serverConn); err != nil {
-			t.Errorf("Server read magic: %v", err)
-			return
-		}
-		serverMux := mux.New(serverConn, mux.DefaultConfig())
-		go serverMux.Run()
-	}()
-
-	// Client side
-	go func() {
-		defer wg.Done()
-		// Write magic
-		if err := proto.WriteMagic(clientConn); err != nil {
-			t.Errorf("Client write magic: %v", err)
-			return
-		}
-		clientMux := mux.New(clientConn, mux.DefaultConfig())
-		go clientMux.Run()
-
-		// Wait for mux to be ready
-		time.Sleep(100 * time.Millisecond)
-
-		// Clean close
-		clientMux.Close()
-	}()
-
-	wg.Wait()
-}
-
-// mockAuthBackend simulates an authentication backend
-type mockAuthBackend struct {
-	validTokens map[string]string // token -> accountID
-}
-
-func newMockAuthBackend() *mockAuthBackend {
-	return &mockAuthBackend{
-		validTokens: map[string]string{
-			"test-token-123": "account-1",
-			"admin-token":    "admin",
-		},
-	}
-}
-
-func (m *mockAuthBackend) Validate(token string) (string, bool) {
-	accountID, ok := m.validTokens[token]
-	return accountID, ok
-}
-
-// TestClientServerConnect tests client connecting to server
-func TestClientServerConnect(t *testing.T) {
-	// Create server
-	serverCfg := server.DefaultConfig()
-	serverCfg.ControlAddr = "127.0.0.1:0" // Let system assign port
-	serverCfg.HTTPAddr = "127.0.0.1:0"
-
-	srv := server.New(serverCfg, nil)
-
-	// Start server
+	srv := server.New(srvCfg, nil)
 	if err := srv.Start(); err != nil {
-		t.Fatalf("Server start failed: %v", err)
+		t.Fatalf("Server start: %v", err)
 	}
 	defer srv.Stop()
 
-	// Server started, client connect will fail auth but we test connection
-	// Since we can't easily access the control address, we test with invalid
+	// Get the actual control address
+	controlAddr := srv.ControlAddr()
+
+	// 3. Connect a client
 	clientCfg := client.DefaultConfig()
-	clientCfg.ServerAddr = "127.0.0.1:1" // Invalid - just to test config
-	clientCfg.Token = "test-token"
+	clientCfg.ServerAddr = controlAddr
+	clientCfg.Token = authMgr.DevToken()
 	clientCfg.Reconnect = false
 
 	c := client.New(clientCfg, nil)
-
-	// This will fail to connect
-	err := c.Connect()
-	if err == nil {
-		t.Error("Connect should fail with invalid address")
+	if err := c.Connect(); err != nil {
+		t.Fatalf("Client connect: %v", err)
 	}
+	defer c.Close()
+
+	// 4. Create an HTTP tunnel pointing to local service
+	localAddr := strings.TrimPrefix(localService.URL, "http://")
+	tunnel, err := c.HTTP(localAddr, client.WithSubdomain("e2etest"))
+	if err != nil {
+		t.Fatalf("Create HTTP tunnel: %v", err)
+	}
+
+	t.Logf("Tunnel created: %s -> %s", tunnel.PublicURL, localAddr)
+
+	// 5. Send an HTTP request through the edge (server's HTTP listener)
+	httpAddr := srv.HTTPAddr()
+	req, _ := http.NewRequest("GET", fmt.Sprintf("http://%s/hello?foo=bar", httpAddr), nil)
+	req.Host = fmt.Sprintf("e2etest.%s", srvCfg.Domain)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Edge HTTP request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != 200 {
+		t.Errorf("Status = %d, want 200. Body: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "Hello from GET /hello") {
+		t.Errorf("Body = %q, want to contain 'Hello from GET /hello'", body)
+	}
+	if resp.Header.Get("X-Test") != "wirerift" {
+		t.Errorf("X-Test header = %q, want 'wirerift'", resp.Header.Get("X-Test"))
+	}
+
+	t.Logf("E2E HTTP tunnel test passed! Response: %s", body)
 }
 
-// TestClientServerFullFlow tests complete client-server interaction
-func TestClientServerFullFlow(t *testing.T) {
-	// This test demonstrates the full flow but requires proper auth setup
-	// For now, we test that the server can start and stop
+// TestEndToEndTCPTunnel tests the complete TCP tunnel flow.
+func TestEndToEndTCPTunnel(t *testing.T) {
+	// 1. Start a local TCP echo server
+	echoListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer echoListener.Close()
 
-	serverCfg := server.DefaultConfig()
-	serverCfg.ControlAddr = "127.0.0.1:0"
-	serverCfg.HTTPAddr = "127.0.0.1:0"
+	go func() {
+		for {
+			conn, err := echoListener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				buf := make([]byte, 1024)
+				for {
+					n, err := conn.Read(buf)
+					if err != nil {
+						return
+					}
+					conn.Write(buf[:n])
+				}
+			}()
+		}
+	}()
 
-	srv := server.New(serverCfg, nil)
+	// 2. Start the tunnel server
+	authMgr := auth.NewManager()
+	srvCfg := server.DefaultConfig()
+	srvCfg.ControlAddr = "127.0.0.1:0"
+	srvCfg.HTTPAddr = "127.0.0.1:0"
+	srvCfg.AuthManager = authMgr
 
+	srv := server.New(srvCfg, nil)
 	if err := srv.Start(); err != nil {
-		t.Fatalf("Server start failed: %v", err)
-	}
-
-	// Verify start time is set
-	if srv.StartTime().IsZero() {
-		t.Error("Server should have start time set")
-	}
-
-	if err := srv.Stop(); err != nil {
-		t.Errorf("Server stop failed: %v", err)
-	}
-}
-
-// TestClientConnectionFailure tests client handling connection failures
-func TestClientConnectionFailure(t *testing.T) {
-	clientCfg := client.DefaultConfig()
-	clientCfg.ServerAddr = "127.0.0.1:1" // Invalid port
-	clientCfg.Reconnect = false
-
-	c := client.New(clientCfg, nil)
-
-	err := c.Connect()
-	if err == nil {
-		t.Error("Connect should fail to invalid address")
-	}
-
-	// Verify it's a connection error
-	if !errors.Is(err, client.ErrReconnectFailed) && err != client.ErrReconnectFailed {
-		// Connection errors wrap differently, just verify it's not nil
-		t.Logf("Got expected connection error: %v", err)
-	}
-}
-
-// TestServerStatsWithActiveConnections tests server stats
-func TestServerStatsWithActiveConnections(t *testing.T) {
-	serverCfg := server.DefaultConfig()
-	serverCfg.ControlAddr = "127.0.0.1:0"
-	serverCfg.HTTPAddr = "127.0.0.1:0"
-
-	srv := server.New(serverCfg, nil)
-
-	if err := srv.Start(); err != nil {
-		t.Fatalf("Server start failed: %v", err)
+		t.Fatalf("Server start: %v", err)
 	}
 	defer srv.Stop()
 
-	// Initially no connections
-	stats := srv.Stats()
-	if stats["active_sessions"] != 0 {
-		t.Errorf("Expected 0 sessions, got %v", stats["active_sessions"])
-	}
-	if stats["active_tunnels"] != 0 {
-		t.Errorf("Expected 0 tunnels, got %v", stats["active_tunnels"])
-	}
+	controlAddr := srv.ControlAddr()
 
-	// Verify start time is set
-	if srv.StartTime().IsZero() {
-		t.Error("StartTime should be set")
-	}
-}
-
-// TestClientCloseWithoutConnect tests client close without connecting
-func TestClientCloseWithoutConnect(t *testing.T) {
+	// 3. Connect a client
 	clientCfg := client.DefaultConfig()
+	clientCfg.ServerAddr = controlAddr
+	clientCfg.Token = authMgr.DevToken()
 	clientCfg.Reconnect = false
 
 	c := client.New(clientCfg, nil)
-
-	// Should not panic
-	if err := c.Close(); err != nil {
-		t.Errorf("Close without connect failed: %v", err)
+	if err := c.Connect(); err != nil {
+		t.Fatalf("Client connect: %v", err)
 	}
+	defer c.Close()
+
+	// 4. Create a TCP tunnel
+	localAddr := echoListener.Addr().String()
+	tunnel, err := c.TCP(localAddr, 0)
+	if err != nil {
+		t.Fatalf("Create TCP tunnel: %v", err)
+	}
+
+	t.Logf("TCP tunnel created: %s -> %s", tunnel.PublicURL, localAddr)
+
+	// Give the TCP tunnel listener time to start
+	time.Sleep(200 * time.Millisecond)
+
+	// 5. Connect to the TCP tunnel port and send data
+	// Extract port from PublicURL (format: "tcp://domain:port")
+	tunnelPort := tunnel.Port
+	if tunnelPort == 0 {
+		// Parse from PublicURL
+		parts := strings.Split(tunnel.PublicURL, ":")
+		if len(parts) >= 3 {
+			fmt.Sscanf(parts[2], "%d", &tunnelPort)
+		}
+	}
+
+	tcpConn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", tunnelPort), 5*time.Second)
+	if err != nil {
+		t.Fatalf("Connect to TCP tunnel: %v", err)
+	}
+	defer tcpConn.Close()
+
+	// Send data and verify echo
+	testData := "Hello TCP Tunnel!"
+	tcpConn.Write([]byte(testData))
+	tcpConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+	buf := make([]byte, 1024)
+	n, err := tcpConn.Read(buf)
+	if err != nil {
+		t.Fatalf("Read from TCP tunnel: %v", err)
+	}
+
+	if string(buf[:n]) != testData {
+		t.Errorf("TCP echo = %q, want %q", string(buf[:n]), testData)
+	}
+
+	t.Logf("E2E TCP tunnel test passed! Echoed: %s", string(buf[:n]))
 }
 
-// TestServerLifecycle tests server start and stop
-func TestServerLifecycle(t *testing.T) {
-	serverCfg := server.DefaultConfig()
-	serverCfg.ControlAddr = "127.0.0.1:0"
-	serverCfg.HTTPAddr = "127.0.0.1:0"
+// TestMultipleTunnels tests creating multiple tunnels on one connection.
+func TestMultipleTunnels(t *testing.T) {
+	authMgr := auth.NewManager()
+	srvCfg := server.DefaultConfig()
+	srvCfg.ControlAddr = "127.0.0.1:0"
+	srvCfg.HTTPAddr = "127.0.0.1:0"
+	srvCfg.AuthManager = authMgr
 
-	srv := server.New(serverCfg, nil)
-
-	// Multiple starts should be idempotent (second one may error)
+	srv := server.New(srvCfg, nil)
 	if err := srv.Start(); err != nil {
-		t.Fatalf("First start failed: %v", err)
+		t.Fatalf("Server start: %v", err)
+	}
+	defer srv.Stop()
+
+	clientCfg := client.DefaultConfig()
+	clientCfg.ServerAddr = srv.ControlAddr()
+	clientCfg.Token = authMgr.DevToken()
+	clientCfg.Reconnect = false
+
+	c := client.New(clientCfg, nil)
+	if err := c.Connect(); err != nil {
+		t.Fatalf("Client connect: %v", err)
+	}
+	defer c.Close()
+
+	// Create multiple HTTP tunnels
+	tunnel1, err := c.HTTP("localhost:3001")
+	if err != nil {
+		t.Fatalf("Create tunnel 1: %v", err)
+	}
+	tunnel2, err := c.HTTP("localhost:3002")
+	if err != nil {
+		t.Fatalf("Create tunnel 2: %v", err)
 	}
 
-	// Stop
-	if err := srv.Stop(); err != nil {
-		t.Errorf("Stop failed: %v", err)
+	if tunnel1.ID == tunnel2.ID {
+		t.Error("Tunnels should have different IDs")
 	}
 
-	// Stop again should not panic
-	if err := srv.Stop(); err != nil {
-		t.Logf("Second stop returned error (expected): %v", err)
-	}
+	t.Logf("Multiple tunnels: %s, %s", tunnel1.PublicURL, tunnel2.PublicURL)
 }
 
-// TestClientConfigVariations tests various client configurations
-func TestClientConfigVariations(t *testing.T) {
-	tests := []struct {
-		name string
-		cfg  client.Config
-	}{
-		{
-			name: "default config",
-			cfg:  client.DefaultConfig(),
-		},
-		{
-			name: "no reconnect",
-			cfg: func() client.Config {
-				c := client.DefaultConfig()
-				c.Reconnect = false
-				return c
-			}(),
-		},
-		{
-			name: "custom intervals",
-			cfg: func() client.Config {
-				c := client.DefaultConfig()
-				c.HeartbeatInterval = 5 * time.Second
-				c.ReconnectInterval = 500 * time.Millisecond
-				return c
-			}(),
-		},
+// TestClientReconnect tests that client can reconnect after disconnect.
+func TestClientReconnect(t *testing.T) {
+	authMgr := auth.NewManager()
+	srvCfg := server.DefaultConfig()
+	srvCfg.ControlAddr = "127.0.0.1:0"
+	srvCfg.HTTPAddr = "127.0.0.1:0"
+	srvCfg.AuthManager = authMgr
+
+	srv := server.New(srvCfg, nil)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Server start: %v", err)
+	}
+	defer srv.Stop()
+
+	// First connection
+	clientCfg := client.DefaultConfig()
+	clientCfg.ServerAddr = srv.ControlAddr()
+	clientCfg.Token = authMgr.DevToken()
+	clientCfg.Reconnect = false
+
+	c1 := client.New(clientCfg, nil)
+	if err := c1.Connect(); err != nil {
+		t.Fatalf("First connect: %v", err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c := client.New(tt.cfg, nil)
-			if c == nil {
-				t.Fatal("Client should not be nil")
-			}
-			if err := c.Close(); err != nil {
-				t.Errorf("Close failed: %v", err)
-			}
-		})
-	}
-}
+	session1 := c1.SessionID()
+	c1.Close()
 
-// TestServerConfigVariations tests various server configurations
-func TestServerConfigVariations(t *testing.T) {
-	tests := []struct {
-		name string
-		cfg  server.Config
-	}{
-		{
-			name: "default config",
-			cfg:  server.DefaultConfig(),
-		},
-		{
-			name: "custom domain",
-			cfg: func() server.Config {
-				c := server.DefaultConfig()
-				c.Domain = "custom.example.com"
-				return c
-			}(),
-		},
-		{
-			name: "custom timeouts",
-			cfg: func() server.Config {
-				c := server.DefaultConfig()
-				c.HeartbeatInterval = 10 * time.Second
-				c.SessionTimeout = 120 * time.Second
-				return c
-			}(),
-		},
+	// Second connection
+	c2 := client.New(clientCfg, nil)
+	if err := c2.Connect(); err != nil {
+		t.Fatalf("Second connect: %v", err)
+	}
+	defer c2.Close()
+
+	session2 := c2.SessionID()
+
+	if session1 == session2 {
+		t.Error("Different connections should have different session IDs")
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tt.cfg.ControlAddr = "127.0.0.1:0"
-			tt.cfg.HTTPAddr = "127.0.0.1:0"
-
-			srv := server.New(tt.cfg, nil)
-			if srv == nil {
-				t.Fatal("Server should not be nil")
-			}
-
-			if err := srv.Start(); err != nil {
-				t.Fatalf("Start failed: %v", err)
-			}
-
-			if err := srv.Stop(); err != nil {
-				t.Errorf("Stop failed: %v", err)
-			}
-		})
-	}
+	t.Logf("Reconnect: session1=%s, session2=%s", session1, session2)
 }

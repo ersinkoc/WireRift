@@ -2502,3 +2502,41 @@ func TestForwardHTTPRequestDeserializeError(t *testing.T) {
 	c1.Close()
 	c2.Close()
 }
+
+func TestControlAddr(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+	// Before start, returns config value
+	if s.ControlAddr() != ":4443" {
+		t.Errorf("ControlAddr = %q, want :4443", s.ControlAddr())
+	}
+
+	// After start, returns actual address
+	s.config.ControlAddr = "127.0.0.1:0"
+	s.config.HTTPAddr = "127.0.0.1:0"
+	s.Start()
+	defer s.Stop()
+
+	addr := s.ControlAddr()
+	if addr == ":4443" || addr == "127.0.0.1:0" {
+		t.Errorf("ControlAddr after start should be resolved, got %q", addr)
+	}
+}
+
+func TestHTTPAddr(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+	// Before start, returns config value
+	if s.HTTPAddr() != ":80" {
+		t.Errorf("HTTPAddr = %q, want :80", s.HTTPAddr())
+	}
+
+	// After start, returns actual address
+	s.config.ControlAddr = "127.0.0.1:0"
+	s.config.HTTPAddr = "127.0.0.1:0"
+	s.Start()
+	defer s.Stop()
+
+	addr := s.HTTPAddr()
+	if addr == ":80" || addr == "127.0.0.1:0" {
+		t.Errorf("HTTPAddr after start should be resolved, got %q", addr)
+	}
+}

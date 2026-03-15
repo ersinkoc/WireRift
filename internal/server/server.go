@@ -773,6 +773,22 @@ func (s *Server) StartTime() time.Time {
 	return startTime
 }
 
+// ControlAddr returns the control listener address (useful when using port 0).
+func (s *Server) ControlAddr() string {
+	if s.controlListener != nil {
+		return s.controlListener.Addr().String()
+	}
+	return s.config.ControlAddr
+}
+
+// HTTPAddr returns the HTTP listener address (useful when using port 0).
+func (s *Server) HTTPAddr() string {
+	if s.httpListener != nil {
+		return s.httpListener.Addr().String()
+	}
+	return s.config.HTTPAddr
+}
+
 // TunnelInfo represents tunnel information for API responses.
 type TunnelInfo struct {
 	ID        string    `json:"id"`
