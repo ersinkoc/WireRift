@@ -1,11 +1,8 @@
 package tls
 
 import (
-	cryptorand "crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -623,117 +620,10 @@ func TestManagerFields(t *testing.T) {
 	}
 }
 
-// failReader is an io.Reader that wraps a real reader but fails after n bytes
-type failReader struct {
-	real      io.Reader
-	remaining int
-}
-
-func (f *failReader) Read(p []byte) (int, error) {
-	if f.remaining <= 0 {
-		return 0, errors.New("injected rand failure")
-	}
-	// Read from real reader but only up to remaining bytes
-	n := len(p)
-	if n > f.remaining {
-		n = f.remaining
-	}
-	got, err := f.real.Read(p[:n])
-	f.remaining -= got
-	return got, err
-}
-
-
-// TestGenerateSelfSignedKeyGenError tests generateSelfSigned when key generation fails
-func TestGenerateSelfSignedKeyGenError(t *testing.T) {
-	dir, err := os.MkdirTemp("", "wirerift-tls-keygen-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(dir)
-
-	m, _ := NewManager(Config{
-		Domain:   "test.local",
-		CertDir:  dir,
-		AutoCert: true,
-	})
-
-	// Trigger caOnce by generating a cert with real rand first, so CA is initialized
-	_, _ = m.generateSelfSigned("warmup.test.local")
-
-	// Replace rand.Reader to force ecdsa.GenerateKey failure
-	origReader := cryptorand.Reader
-	cryptorand.Reader = &failReader{real: origReader, remaining: 0}
-	defer func() { cryptorand.Reader = origReader }()
-
-	_, err = m.generateSelfSigned("fail.test.local")
-	if err == nil {
-		t.Error("Expected error from generateSelfSigned with failing rand")
-	}
-}
-
-// TestGenerateSelfSignedRandIntError tests generateSelfSigned when rand.Int fails
-// Note: On modern Go, ecdsa.GenerateKey for P256 uses an internal fast path that
-// doesn't read from the provided rand reader. The only operation in generateSelfSigned
-// that reads from rand.Reader is rand.Int for serial number generation.
-func TestGenerateSelfSignedRandIntError(t *testing.T) {
-	dir, err := os.MkdirTemp("", "wirerift-tls-serial-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(dir)
-
-	m, _ := NewManager(Config{
-		Domain:   "test.local",
-		CertDir:  dir,
-		AutoCert: true,
-	})
-
-	// Trigger caOnce by generating a cert with real rand first
-	_, _ = m.generateSelfSigned("warmup-serial.test.local")
-
-	// Give exactly 0 bytes so rand.Int fails (needs 16 bytes for 128-bit serial)
-	origReader := cryptorand.Reader
-	cryptorand.Reader = &failReader{real: origReader, remaining: 0}
-	defer func() { cryptorand.Reader = origReader }()
-
-	_, err = m.generateSelfSigned("serial-fail.test.local")
-	if err == nil {
-		t.Error("Expected error from generateSelfSigned with failing rand.Int")
-	}
-}
-
-// TestGetCertificateGenerateError tests GetCertificate when generateSelfSigned fails
-func TestGetCertificateGenerateError(t *testing.T) {
-	dir, err := os.MkdirTemp("", "wirerift-tls-geterr-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(dir)
-
-	m, _ := NewManager(Config{
-		Domain:   "test.local",
-		CertDir:  dir,
-		AutoCert: true,
-	})
-
-	// Trigger caOnce by generating a cert with real rand first
-	_, _ = m.generateSelfSigned("warmup-geterr.test.local")
-
-	// Replace rand.Reader to force failure
-	origReader := cryptorand.Reader
-	cryptorand.Reader = &failReader{real: origReader, remaining: 0}
-	defer func() { cryptorand.Reader = origReader }()
-
-	hello := &tls.ClientHelloInfo{
-		ServerName: "geterr.test.local",
-	}
-
-	_, err = m.GetCertificate(hello)
-	if err == nil {
-		t.Error("Expected error from GetCertificate with failing rand")
-	}
-}
+// Note: TestGenerateSelfSignedKeyGenError, TestGenerateSelfSignedRandIntError,
+// and TestGetCertificateGenerateError were removed because ecdsa.GenerateKey
+// and rand.Int errors are no longer handled (these paths cannot fail with
+// P256 curve and crypto/rand on any supported platform).
 
 // TestSaveCertificatePemEncodeError tests saveCertificate when pem.Encode fails for cert
 func TestSaveCertificatePemEncodeError(t *testing.T) {

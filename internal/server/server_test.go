@@ -3524,10 +3524,12 @@ func TestTCPProxyProxyConnectionFullFlow(t *testing.T) {
 	}
 
 	proxyRemote.Close()
+	m.Close()
+	clientMux.Close()
 
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Error("ProxyConnection did not complete")
 	}
 

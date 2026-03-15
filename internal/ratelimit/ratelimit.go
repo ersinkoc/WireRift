@@ -99,7 +99,7 @@ func (l *Limiter) ReserveN(n int) time.Duration {
 	}
 
 	deficit := float64(n) - l.tokens
-	waitDuration := time.Duration(deficit/l.rate) * time.Second
+	waitDuration := time.Duration(deficit / l.rate * float64(time.Second))
 
 	return waitDuration
 }
