@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-03-15
+
+### Added
+- Fuzz test suite: 6 fuzzers testing frame parser, JSON payload, magic bytes, HTTP response, subdomain extraction, IP whitelist (~52M inputs, 0 crashes)
+- Advanced test suite: security (16), stress (5), reconnect (5), soak (4) = 30 tests
+- Benchmark suite: HTTP latency/throughput/concurrency, TCP throughput, tunnel creation speed
+- CI: race detector, fuzz tests, advanced tests, coverage threshold enforcement
+
 ## [1.1.0] - 2026-03-15
 
 ### Added

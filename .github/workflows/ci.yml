@@ -6,18 +6,14 @@ on:
   pull_request:
     branches: [main, master]
 
-env:
-  PACKAGES: ./cmd/... ./internal/... ./test/...
-
 jobs:
   test:
-    name: Test (Go ${{ matrix.go }} / ${{ matrix.os }})
+    name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        go: ['1.23']
 
     steps:
       - uses: actions/checkout@v4
@@ -25,17 +21,77 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go }}
+          go-version: '1.23'
           cache: false
 
       - name: Build
         run: go build ./cmd/... ./internal/...
 
-      - name: Test
-        run: go test ./cmd/... ./internal/... ./test/... -timeout 120s
-
       - name: Vet
         run: go vet ./cmd/... ./internal/...
+
+      - name: Unit Tests
+        run: go test ./cmd/... ./internal/... ./test/integration/ -timeout 120s
+
+  race:
+    name: Race Detector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: false
+
+      - name: Test with Race Detector
+        run: go test -race ./cmd/... ./internal/... ./test/integration/ -timeout 180s
+
+  fuzz:
+    name: Fuzz Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: false
+
+      - name: Fuzz Frame Parser
+        run: go test -fuzz=FuzzReadFrame -fuzztime=30s ./internal/proto/
+
+      - name: Fuzz JSON Payload
+        run: go test -fuzz=FuzzDecodeJSONPayload -fuzztime=30s ./internal/proto/
+
+      - name: Fuzz Magic Bytes
+        run: go test -fuzz=FuzzReadMagic -fuzztime=15s ./internal/proto/
+
+      - name: Fuzz HTTP Response
+        run: go test -fuzz=FuzzDeserializeResponse -fuzztime=30s ./internal/server/
+
+      - name: Fuzz Subdomain Extraction
+        run: go test -fuzz=FuzzExtractSubdomain -fuzztime=15s ./internal/server/
+
+      - name: Fuzz IP Whitelist
+        run: go test -fuzz=FuzzIsIPAllowed -fuzztime=15s ./internal/server/
+
+  advanced:
+    name: Advanced Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: false
+
+      - name: Security, Stress, Reconnect & Soak Tests
+        run: go run ./test/advanced/
 
   coverage:
     name: Coverage
@@ -49,10 +105,10 @@ jobs:
           go-version: '1.23'
           cache: false
 
-      - name: Test with coverage
-        run: go test ./cmd/... ./internal/... ./test/... -coverprofile=coverage.out -timeout 120s
+      - name: Test with Coverage
+        run: go test ./cmd/... ./internal/... -coverprofile=coverage.out -timeout 120s
 
-      - name: Check coverage
+      - name: Check Coverage Threshold
         run: |
           total=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | sed 's/%//')
           echo "Total coverage: ${total}%"
