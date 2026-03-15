@@ -67,6 +67,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix: README corrected HTTPS URLs to HTTP (HTTPS requires explicit TLS config)
 - Fix: README "100% Test Coverage" claim replaced with accurate description
 
+### Removed
+- Dead code: `internal/metrics/` package (364 LOC, never imported)
+- Dead code: `internal/middleware/` package (872 LOC, never imported)
+- Dead code: `internal/version/` package (71 LOC, never imported)
+- Dead code: `HTTPProxy`, `TCPProxy`, `TCPTunnel`, `bidiCopy` structs and 6 unused types in proxy files
+- Dead code: 15 unused error sentinels across 6 packages
+- Dead code: 6 unused utility functions, `TunnelMetadata` struct, redundant getters
+- Dead code: `CopyButton.tsx`, `SocialLink` constant, unused assets
+- Total: ~3,100 lines of dead code removed, codebase reduced by ~15%
+
 ## [1.0.1] - 2026-03-01
 
 ### Added
