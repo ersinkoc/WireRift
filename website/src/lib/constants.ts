@@ -20,7 +20,7 @@ export interface NavItem {
 
 export const NAV_ITEMS: NavItem[] = [
   { label: 'Docs', href: '/docs/getting-started' },
-  { label: 'Examples', href: '/docs/quick-start' },
+  { label: 'Download', href: '/download' },
   { label: 'Changelog', href: '/changelog' },
 ]
 

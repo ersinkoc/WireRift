@@ -1,0 +1,132 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Run tests
+        run: go test ./... -timeout 120s
+
+      - name: Get version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build all platforms
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          COMMIT: ${{ github.sha }}
+          DATE: ${{ github.event.head_commit.timestamp }}
+        run: |
+          LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT::8} -X main.date=${DATE}"
+
+          platforms=(
+            "linux/amd64"
+            "linux/arm64"
+            "linux/arm"
+            "darwin/amd64"
+            "darwin/arm64"
+            "windows/amd64"
+            "windows/arm64"
+            "freebsd/amd64"
+          )
+
+          mkdir -p dist
+
+          for platform in "${platforms[@]}"; do
+            GOOS="${platform%/*}"
+            GOARCH="${platform#*/}"
+
+            ext=""
+            if [ "$GOOS" = "windows" ]; then
+              ext=".exe"
+            fi
+
+            echo "Building ${GOOS}/${GOARCH}..."
+
+            # Build client
+            GOOS=$GOOS GOARCH=$GOARCH go build -ldflags="$LDFLAGS" \
+              -o "dist/wirerift-${GOOS}-${GOARCH}${ext}" \
+              ./cmd/wirerift
+
+            # Build server
+            GOOS=$GOOS GOARCH=$GOARCH go build -ldflags="$LDFLAGS" \
+              -o "dist/wirerift-server-${GOOS}-${GOARCH}${ext}" \
+              ./cmd/wirerift-server
+          done
+
+      - name: Create archives
+        run: |
+          cd dist
+          for f in wirerift-*; do
+            if [[ "$f" == *.exe ]]; then
+              zip "${f%.exe}.zip" "$f"
+            else
+              tar czf "${f}.tar.gz" "$f"
+              chmod +x "$f"
+            fi
+          done
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum *.tar.gz *.zip 2>/dev/null > checksums.txt || true
+          cat checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: WireRift v${{ steps.version.outputs.VERSION }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+          body: |
+            ## WireRift v${{ steps.version.outputs.VERSION }}
+
+            ### Installation
+
+            **Go Install:**
+            ```bash
+            go install github.com/wirerift/wirerift/cmd/wirerift@v${{ steps.version.outputs.VERSION }}
+            go install github.com/wirerift/wirerift/cmd/wirerift-server@v${{ steps.version.outputs.VERSION }}
+            ```
+
+            **Binary Download:**
+            Download the appropriate binary for your platform from the assets below.
+
+            | Platform | Client | Server |
+            |----------|--------|--------|
+            | Linux x64 | `wirerift-linux-amd64` | `wirerift-server-linux-amd64` |
+            | Linux ARM64 | `wirerift-linux-arm64` | `wirerift-server-linux-arm64` |
+            | macOS x64 | `wirerift-darwin-amd64` | `wirerift-server-darwin-amd64` |
+            | macOS ARM64 (M1/M2) | `wirerift-darwin-arm64` | `wirerift-server-darwin-arm64` |
+            | Windows x64 | `wirerift-windows-amd64.exe` | `wirerift-server-windows-amd64.exe` |
+            | Windows ARM64 | `wirerift-windows-arm64.exe` | `wirerift-server-windows-arm64.exe` |
+            | FreeBSD x64 | `wirerift-freebsd-amd64` | `wirerift-server-freebsd-amd64` |
+
+            ### Verify Checksums
+            ```bash
+            sha256sum -c checksums.txt
+            ```

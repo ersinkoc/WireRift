@@ -6,6 +6,7 @@ import { DocsLayout } from '@/components/layout/DocsLayout'
 const HomePage = lazy(() => import('@/pages/HomePage'))
 const DocsPage = lazy(() => import('@/pages/DocsPage'))
 const ChangelogPage = lazy(() => import('@/pages/ChangelogPage'))
+const DownloadPage = lazy(() => import('@/pages/DownloadPage'))
 const NotFoundPage = lazy(() => import('@/pages/NotFoundPage'))
 
 function LoadingFallback() {
@@ -23,6 +24,7 @@ export default function App() {
         <Routes>
           <Route element={<Layout />}>
             <Route path="/" element={<HomePage />} />
+            <Route path="/download" element={<DownloadPage />} />
             <Route path="/changelog" element={<ChangelogPage />} />
             <Route path="/docs" element={<DocsLayout />}>
               <Route index element={<DocsPage />} />
