@@ -19,6 +19,10 @@ Open-source, zero-dependency tunnel server and client. Written in Go.
 - **Built-in Dashboard** — web UI for monitoring active tunnels
 - **Stream Multiplexing** — multiple connections over single TCP
 - **Flow Control** — backpressure handling per stream
+- **Rate Limiting** — per-IP HTTP and per-session tunnel creation limits
+- **Auto Reconnect** — automatic reconnection with tunnel re-creation
+- **Session Timeout** — inactive sessions cleaned up automatically
+- **100% Test Coverage** — every line of code is tested
 
 ## Quick Start
 
@@ -94,13 +98,14 @@ WireRift uses a custom binary protocol with stream multiplexing:
 ### Protocol Frame Format
 
 ```
-+--------+--------+----------+----------+---------+
-| Version|  Type  | StreamID | Reserved | Length  |
-| 1 byte | 1 byte | 4 bytes  | 1 byte   | 2 bytes |
-+--------+--------+----------+----------+---------+
-|                  Payload (variable)              |
-+--------------------------------------------------+
++--------+--------+----------+-----------+
+| Version|  Type  | StreamID |  Length   |
+| 1 byte | 1 byte | 3 bytes  |  4 bytes  |
++--------+--------+----------+-----------+
+|            Payload (variable)          |
++----------------------------------------+
 
+Header: 9 bytes total
 Magic bytes: 0x57 0x52 0x46 0x01 ("WRF\x01")
 ```
 
@@ -112,14 +117,16 @@ Magic bytes: 0x57 0x52 0x46 0x01 ("WRF\x01")
 | AUTH_RES | 0x02 | Authentication response |
 | TUNNEL_REQ | 0x03 | Tunnel creation request |
 | TUNNEL_RES | 0x04 | Tunnel creation response |
+| TUNNEL_CLOSE | 0x05 | Tunnel close |
 | STREAM_OPEN | 0x10 | Open new stream |
 | STREAM_DATA | 0x11 | Data frame |
 | STREAM_CLOSE | 0x12 | Graceful close |
 | STREAM_RST | 0x13 | Reset stream |
 | STREAM_WINDOW | 0x14 | Flow control update |
 | HEARTBEAT | 0x20 | Keepalive ping |
-| GO_AWAY | 0x21 | Server shutdown notice |
-| ERROR | 0x22 | Error frame |
+| HEARTBEAT_ACK | 0x21 | Keepalive pong |
+| GO_AWAY | 0xFE | Server shutdown notice |
+| ERROR | 0xFF | Error frame |
 
 ### Stream Multiplexing
 
