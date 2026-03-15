@@ -213,6 +213,46 @@ wirerift/
 └── README.md
 ```
 
+## Benchmark
+
+Tested locally on AMD Ryzen 9 9950X3D, Windows 11, Go 1.23:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ HTTP Latency (100 requests, p50)                            │
+├───────────────────┬──────────────┬──────────────┬───────────┤
+│ Response Size     │ Direct       │ Through Tunnel│ Overhead  │
+├───────────────────┼──────────────┼──────────────┼───────────┤
+│ 2 bytes           │ 0.52 ms      │ 1.05 ms      │ +0.53 ms  │
+│ 1 KB              │ 0.52 ms      │ 0.52 ms      │ ~0 ms     │
+│ 64 KB             │ 0.52 ms      │ 0.52 ms      │ ~0 ms     │
+│ 1 MB              │ 1.00 ms      │ 0.52 ms      │ ~0 ms     │
+├───────────────────┴──────────────┴──────────────┴───────────┤
+│ HTTP Throughput                                             │
+├─────────────────────────────────────────────────────────────┤
+│ Download:  95.8 MB/s (288 MB in 3s)                         │
+│ Upload:    0.2 MB/s  (stream mux overhead)                  │
+├─────────────────────────────────────────────────────────────┤
+│ HTTP Concurrency                                            │
+├───────────────────┬──────────────┬──────────────────────────┤
+│ Concurrent Conns  │ Requests/sec │ Avg Latency              │
+├───────────────────┼──────────────┼──────────────────────────┤
+│ 1                 │ 10,442       │ 94 µs                    │
+│ 10                │ 9,814        │ 995 µs                   │
+│ 50                │ 6,868        │ 7.2 ms                   │
+│ 100               │ 3,915        │ 25.5 ms                  │
+├───────────────────┴──────────────┴──────────────────────────┤
+│ Tunnel Creation: ~31,000 tunnels/sec                        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Run benchmarks yourself:
+
+```bash
+go run ./test/benchmark/      # Throughput & latency
+go test -bench=. ./internal/  # Micro-benchmarks
+```
+
 ## Development
 
 ```bash
