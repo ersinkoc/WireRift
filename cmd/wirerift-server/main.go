@@ -112,6 +112,7 @@ Environment Variables:
 
 	// Create auth manager
 	authMgr := auth.NewManager()
+	logger.Info("development token generated", "token", authMgr.DevToken())
 
 	// Create domain manager
 	domainMgr := config.NewDomainManager(*domain)
