@@ -3985,3 +3985,56 @@ func TestHandleTunnelRequestHTTPWithWhitelistAndPIN(t *testing.T) {
 	c2.Close()
 	m.Close()
 }
+
+func TestACMEChallengeRouting(t *testing.T) {
+	challengeServed := false
+	cfg := DefaultConfig()
+	cfg.ControlAddr = "127.0.0.1:0"
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.Domain = "test.dev"
+	cfg.ACMEChallengeHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		challengeServed = true
+		w.Write([]byte("acme-token-response"))
+	})
+	s := New(cfg, nil)
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer s.Stop()
+
+	resp, err := http.Get("http://" + s.HTTPAddr() + "/.well-known/acme-challenge/test-token")
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if !challengeServed {
+		t.Error("ACME challenge handler was not called")
+	}
+	if string(body) != "acme-token-response" {
+		t.Errorf("Body = %q, want 'acme-token-response'", body)
+	}
+}
+
+func TestACMEChallengeRoutingDisabled(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ControlAddr = "127.0.0.1:0"
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.Domain = "test.dev"
+	s := New(cfg, nil)
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer s.Stop()
+
+	resp, err := http.Get("http://" + s.HTTPAddr() + "/.well-known/acme-challenge/test-token")
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("Status = %d, want 400", resp.StatusCode)
+	}
+}

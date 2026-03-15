@@ -63,6 +63,9 @@ type Config struct {
 
 	// AuthManager is the authentication manager.
 	AuthManager *auth.Manager
+
+	// ACMEChallengeHandler serves ACME HTTP-01 challenges on /.well-known/acme-challenge/
+	ACMEChallengeHandler http.HandlerFunc
 }
 
 // DefaultConfig returns the default server configuration.
@@ -786,6 +789,12 @@ func (s *Server) startHTTPSListener() error {
 
 // handleHTTPRequest handles incoming HTTP requests.
 func (s *Server) handleHTTPRequest(w http.ResponseWriter, r *http.Request) {
+	// Serve ACME HTTP-01 challenges before any other processing
+	if strings.HasPrefix(r.URL.Path, "/.well-known/acme-challenge/") && s.config.ACMEChallengeHandler != nil {
+		s.config.ACMEChallengeHandler(w, r)
+		return
+	}
+
 	// Rate limit by client IP
 	clientIP := r.RemoteAddr
 	if idx := strings.LastIndex(clientIP, ":"); idx > 0 {

@@ -152,6 +152,7 @@ Environment Variables:
 
 	if tlsMgr != nil {
 		srvConfig.TLSConfig = tlsMgr.TLSConfig()
+		srvConfig.ACMEChallengeHandler = tlsMgr.ACMEChallengeHandler()
 	}
 
 	// Create server
