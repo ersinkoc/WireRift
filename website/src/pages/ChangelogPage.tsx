@@ -14,7 +14,7 @@ interface ChangelogEntry {
 const changelog: ChangelogEntry[] = [
   {
     version: '1.0.0',
-    date: '2025-01-15',
+    date: '2026-03-15',
     title: 'Initial Release',
     changes: [
       { type: 'added', description: 'HTTP tunnel support with subdomain routing' },
