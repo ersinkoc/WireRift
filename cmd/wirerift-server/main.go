@@ -46,6 +46,8 @@ func run(parentCtx context.Context, args []string) error {
 	// TLS options
 	autoCert := fs.Bool("auto-cert", false, "Auto-generate self-signed certificates")
 	certDir := fs.String("cert-dir", "certs", "Directory for certificates")
+	acmeEmail := fs.String("acme-email", "", "Email for Let's Encrypt (enables ACME)")
+	acmeStaging := fs.Bool("acme-staging", false, "Use Let's Encrypt staging server")
 
 	// Logging
 	verbose := fs.Bool("v", false, "Verbose logging")
@@ -123,14 +125,19 @@ Environment Variables:
 	// Create TLS manager
 	var tlsMgr *tlspkg.Manager
 	var tlsErr error
-	if *autoCert {
+	if *autoCert || *acmeEmail != "" {
 		tlsMgr, tlsErr = tlspkg.NewManager(tlspkg.Config{
-			Domain:   *domain,
-			CertDir:  *certDir,
-			AutoCert: true,
+			Domain:     *domain,
+			CertDir:    *certDir,
+			AutoCert:   true,
+			Email:      *acmeEmail,
+			UseStaging: *acmeStaging,
 		})
 		if tlsErr != nil {
 			return fmt.Errorf("failed to create TLS manager: %v", tlsErr)
+		}
+		if tlsMgr.IsACMEEnabled() {
+			logger.Info("Let's Encrypt ACME enabled", "email", *acmeEmail, "staging", *acmeStaging)
 		}
 	}
 

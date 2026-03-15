@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"math/big"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -54,6 +55,9 @@ type Manager struct {
 	caCert    *x509.Certificate
 	caKey     *ecdsa.PrivateKey
 	caOnce    sync.Once
+
+	// ACME (Let's Encrypt)
+	acme *ACMEManager
 }
 
 // NewManager creates a new TLS manager.
@@ -72,6 +76,20 @@ func NewManager(config Config) (*Manager, error) {
 	// Ensure cert directory exists
 	if err := os.MkdirAll(config.CertDir, 0700); err != nil {
 		return nil, fmt.Errorf("create cert dir: %w", err)
+	}
+
+	// Initialize ACME if email is provided
+	if config.Email != "" {
+		acmeMgr, err := NewACMEManager(config.Email, config.CertDir, config.UseStaging, nil)
+		if err != nil {
+			return nil, fmt.Errorf("ACME init: %w", err)
+		}
+		if err := acmeMgr.Initialize(); err != nil {
+			slog.Warn("ACME initialization failed, falling back to self-signed", "error", err)
+		} else {
+			m.acme = acmeMgr
+			slog.Info("ACME enabled (Let's Encrypt)", "staging", config.UseStaging)
+		}
 	}
 
 	return m, nil
@@ -96,7 +114,21 @@ func (m *Manager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, 
 		return cert, nil
 	}
 
-	// Generate self-signed for development
+	// Try ACME (Let's Encrypt) first
+	if m.acme != nil {
+		bundle, err := m.acme.ObtainCertificate([]string{host})
+		if err == nil {
+			tlsCert, err := bundle.TLSCertificate()
+			if err == nil {
+				m.certs.Store(host, tlsCert)
+				slog.Info("ACME certificate obtained", "host", host)
+				return tlsCert, nil
+			}
+		}
+		slog.Warn("ACME failed, falling back", "host", host, "error", err)
+	}
+
+	// Fallback: generate self-signed for development
 	if m.config.AutoCert {
 		cert, err = m.generateSelfSigned(host)
 		if err != nil {
@@ -247,4 +279,20 @@ func (m *Manager) TLSConfig() *tls.Config {
 // WildcardDomain returns the wildcard domain for the base domain.
 func (m *Manager) WildcardDomain() string {
 	return "*." + m.config.Domain
+}
+
+// ACMEChallengeHandler returns the HTTP handler for ACME HTTP-01 challenges.
+// Mount at /.well-known/acme-challenge/ on port 80.
+func (m *Manager) ACMEChallengeHandler() http.HandlerFunc {
+	if m.acme == nil {
+		return func(w http.ResponseWriter, r *http.Request) {
+			http.NotFound(w, r)
+		}
+	}
+	return m.acme.ServeChallenge
+}
+
+// IsACMEEnabled returns true if Let's Encrypt is configured and active.
+func (m *Manager) IsACMEEnabled() bool {
+	return m.acme != nil
 }
