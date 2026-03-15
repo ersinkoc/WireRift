@@ -163,7 +163,7 @@ func doHTTP(parentCtx context.Context, args []string) error {
 
 	localPort, err := strconv.Atoi(fargs[0])
 	if err != nil {
-		return fmt.Errorf("Invalid port: %s", fargs[0])
+		return fmt.Errorf("invalid port: %s", fargs[0])
 	}
 
 	// Subdomain from positional arg or flag
@@ -189,7 +189,7 @@ func doHTTP(parentCtx context.Context, args []string) error {
 
 	// Connect to server
 	if err := c.Connect(); err != nil {
-		return fmt.Errorf("Failed to connect: %v", err)
+		return fmt.Errorf("failed to connect: %v", err)
 	}
 
 	// Create tunnel
@@ -200,7 +200,7 @@ func doHTTP(parentCtx context.Context, args []string) error {
 
 	tunnel, err := c.HTTP(fmt.Sprintf("localhost:%d", localPort), tunnelOpts...)
 	if err != nil {
-		return fmt.Errorf("Failed to create tunnel: %v", err)
+		return fmt.Errorf("failed to create tunnel: %v", err)
 	}
 
 	fmt.Printf("HTTP tunnel created: %s -> http://localhost:%d\n", tunnel.PublicURL, localPort)
@@ -251,7 +251,7 @@ func doTCP(parentCtx context.Context, args []string) error {
 
 	localPort, err := strconv.Atoi(fargs[0])
 	if err != nil {
-		return fmt.Errorf("Invalid port: %s", fargs[0])
+		return fmt.Errorf("invalid port: %s", fargs[0])
 	}
 
 	logger := createLogger(*verbose)
@@ -271,13 +271,13 @@ func doTCP(parentCtx context.Context, args []string) error {
 
 	// Connect to server
 	if err := c.Connect(); err != nil {
-		return fmt.Errorf("Failed to connect: %v", err)
+		return fmt.Errorf("failed to connect: %v", err)
 	}
 
 	// Create tunnel
 	tunnel, err := c.TCP(fmt.Sprintf("localhost:%d", localPort), 0)
 	if err != nil {
-		return fmt.Errorf("Failed to create tunnel: %v", err)
+		return fmt.Errorf("failed to create tunnel: %v", err)
 	}
 
 	fmt.Printf("TCP tunnel created: %s:%d -> localhost:%d\n", opts.server, tunnel.Port, localPort)
@@ -312,7 +312,7 @@ func doStart(parentCtx context.Context, args []string) error {
 
 	cfg, err := loadConfig(configFile)
 	if err != nil {
-		return fmt.Errorf("Failed to load config: %v", err)
+		return fmt.Errorf("failed to load config: %v", err)
 	}
 
 	if *verbose {
@@ -337,7 +337,7 @@ func doStart(parentCtx context.Context, args []string) error {
 
 	// Connect to server
 	if err := c.Connect(); err != nil {
-		return fmt.Errorf("Failed to connect: %v", err)
+		return fmt.Errorf("failed to connect: %v", err)
 	}
 
 	for _, t := range cfg.Tunnels {
@@ -485,7 +485,7 @@ func doList(args []string) error {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("Failed to connect to server: %v", err)
+		return fmt.Errorf("failed to connect to server: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -507,7 +507,7 @@ func doList(args []string) error {
 	}
 
 	if err := json.Unmarshal(body, &tunnels); err != nil {
-		return fmt.Errorf("Failed to parse response: %v", err)
+		return fmt.Errorf("failed to parse response: %v", err)
 	}
 
 	if len(tunnels) == 0 {

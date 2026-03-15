@@ -265,16 +265,16 @@ func TestDoHTTP_NoPort(t *testing.T) {
 	assertErrContains(t, doHTTP(context.Background(), []string{"wirerift", "http"}), "missing port")
 }
 func TestDoHTTP_InvalidPort(t *testing.T) {
-	assertErrContains(t, doHTTP(context.Background(), []string{"wirerift", "http", "abc"}), "Invalid port")
+	assertErrContains(t, doHTTP(context.Background(), []string{"wirerift", "http", "abc"}), "invalid port")
 }
 func TestDoHTTP_ConnectFail(t *testing.T) {
-	assertErrContains(t, doHTTP(context.Background(), []string{"wirerift", "http", "-server", "127.0.0.1:1", "8080"}), "Failed to connect")
+	assertErrContains(t, doHTTP(context.Background(), []string{"wirerift", "http", "-server", "127.0.0.1:1", "8080"}), "failed to connect")
 }
 func TestDoHTTP_ConnectFail_WithSubdomain(t *testing.T) {
-	assertErrContains(t, doHTTP(context.Background(), []string{"wirerift", "http", "-server", "127.0.0.1:1", "8080", "mysubdomain"}), "Failed to connect")
+	assertErrContains(t, doHTTP(context.Background(), []string{"wirerift", "http", "-server", "127.0.0.1:1", "8080", "mysubdomain"}), "failed to connect")
 }
 func TestDoHTTP_ConnectFail_WithFlags(t *testing.T) {
-	assertErrContains(t, doHTTP(context.Background(), []string{"wirerift", "http", "-server", "127.0.0.1:1", "-token", "tok", "-subdomain", "sub", "-v", "8080"}), "Failed to connect")
+	assertErrContains(t, doHTTP(context.Background(), []string{"wirerift", "http", "-server", "127.0.0.1:1", "-token", "tok", "-subdomain", "sub", "-v", "8080"}), "failed to connect")
 }
 func TestDoHTTP_FlagParseError(t *testing.T) {
 	assertErr(t, doHTTP(context.Background(), []string{"wirerift", "http", "-unknown-flag"}))
@@ -286,13 +286,13 @@ func TestDoTCP_NoPort(t *testing.T) {
 	assertErrContains(t, doTCP(context.Background(), []string{"wirerift", "tcp"}), "missing port")
 }
 func TestDoTCP_InvalidPort(t *testing.T) {
-	assertErrContains(t, doTCP(context.Background(), []string{"wirerift", "tcp", "abc"}), "Invalid port")
+	assertErrContains(t, doTCP(context.Background(), []string{"wirerift", "tcp", "abc"}), "invalid port")
 }
 func TestDoTCP_ConnectFail(t *testing.T) {
-	assertErrContains(t, doTCP(context.Background(), []string{"wirerift", "tcp", "-server", "127.0.0.1:1", "25565"}), "Failed to connect")
+	assertErrContains(t, doTCP(context.Background(), []string{"wirerift", "tcp", "-server", "127.0.0.1:1", "25565"}), "failed to connect")
 }
 func TestDoTCP_ConnectFail_WithFlags(t *testing.T) {
-	assertErrContains(t, doTCP(context.Background(), []string{"wirerift", "tcp", "-server", "127.0.0.1:1", "-token", "tok", "-v", "25565"}), "Failed to connect")
+	assertErrContains(t, doTCP(context.Background(), []string{"wirerift", "tcp", "-server", "127.0.0.1:1", "-token", "tok", "-v", "25565"}), "failed to connect")
 }
 func TestDoTCP_FlagParseError(t *testing.T) {
 	assertErr(t, doTCP(context.Background(), []string{"wirerift", "tcp", "-unknown-flag"}))
@@ -302,24 +302,24 @@ func TestDoTCP_FlagParseError(t *testing.T) {
 
 func TestDoStart_NoConfig(t *testing.T) {
 	withTempDir(t, func() {
-		assertErrContains(t, doStart(context.Background(), []string{"wirerift", "start"}), "Failed to load config")
+		assertErrContains(t, doStart(context.Background(), []string{"wirerift", "start"}), "failed to load config")
 	})
 }
 func TestDoStart_ConnectFail(t *testing.T) {
 	withTempDir(t, func() {
 		os.WriteFile("wirerift.yaml", []byte("server: 127.0.0.1:1\ntunnels:\n  - type: http\n    local_port: 8080\n"), 0644)
-		assertErrContains(t, doStart(context.Background(), []string{"wirerift", "start"}), "Failed to connect")
+		assertErrContains(t, doStart(context.Background(), []string{"wirerift", "start"}), "failed to connect")
 	})
 }
 func TestDoStart_ConnectFail_WithFile(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "custom.yaml")
 	os.WriteFile(f, []byte("server: 127.0.0.1:1\ntunnels:\n  - type: http\n    local_port: 8080\n"), 0644)
-	assertErrContains(t, doStart(context.Background(), []string{"wirerift", "start", f}), "Failed to connect")
+	assertErrContains(t, doStart(context.Background(), []string{"wirerift", "start", f}), "failed to connect")
 }
 func TestDoStart_ConnectFail_Verbose(t *testing.T) {
 	withTempDir(t, func() {
 		os.WriteFile("wirerift.yaml", []byte("server: 127.0.0.1:1\ntunnels:\n  - type: http\n    local_port: 8080\n"), 0644)
-		assertErrContains(t, doStart(context.Background(), []string{"wirerift", "start", "-v"}), "Failed to connect")
+		assertErrContains(t, doStart(context.Background(), []string{"wirerift", "start", "-v"}), "failed to connect")
 	})
 }
 func TestDoStart_FlagParseError(t *testing.T) {
@@ -329,7 +329,7 @@ func TestDoStart_FlagParseError(t *testing.T) {
 // --- doList error tests ---
 
 func TestDoList_ConnectFail(t *testing.T) {
-	assertErrContains(t, doList([]string{"wirerift", "list", "-server", "127.0.0.1:1"}), "Failed to connect to server")
+	assertErrContains(t, doList([]string{"wirerift", "list", "-server", "127.0.0.1:1"}), "failed to connect to server")
 }
 func TestDoList_ConnectFail_WithToken(t *testing.T) {
 	assertErr(t, doList([]string{"wirerift", "list", "-server", "127.0.0.1:1", "-token", "tok"}))
@@ -361,7 +361,7 @@ func TestDoList_Empty_MockServer(t *testing.T) {
 func TestDoList_InvalidJSON_MockServer(t *testing.T) {
 	srv := startMockListServer(t, `not json`)
 	defer srv.Close()
-	assertErrContains(t, doList([]string{"wirerift", "list", "-server", "127.0.0.1:4040"}), "Failed to parse response")
+	assertErrContains(t, doList([]string{"wirerift", "list", "-server", "127.0.0.1:4040"}), "failed to parse response")
 }
 
 func TestDoList_NoToken_MockServer(t *testing.T) {
@@ -633,8 +633,8 @@ func TestDoHTTPTunnelCreateFail(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error from doHTTP with tunnel failure")
 	}
-	if !strings.Contains(err.Error(), "Failed to create tunnel") {
-		t.Fatalf("Expected 'Failed to create tunnel' error, got: %v", err)
+	if !strings.Contains(err.Error(), "failed to create tunnel") {
+		t.Fatalf("Expected 'failed to create tunnel' error, got: %v", err)
 	}
 }
 
@@ -673,8 +673,8 @@ func TestDoTCPTunnelCreateFail(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error from doTCP with tunnel failure")
 	}
-	if !strings.Contains(err.Error(), "Failed to create tunnel") {
-		t.Fatalf("Expected 'Failed to create tunnel' error, got: %v", err)
+	if !strings.Contains(err.Error(), "failed to create tunnel") {
+		t.Fatalf("Expected 'failed to create tunnel' error, got: %v", err)
 	}
 }
 

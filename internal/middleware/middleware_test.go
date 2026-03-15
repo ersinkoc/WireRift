@@ -495,9 +495,11 @@ func TestCORSPreflightNotAllowed(t *testing.T) {
 	}
 }
 
+type testContextKey struct{}
+
 func TestContextValues(t *testing.T) {
 	// Test that middleware can set context values
-	key := struct{}{}
+	key := testContextKey{}
 	value := "test-value"
 
 	middleware := func(next http.Handler) http.Handler {

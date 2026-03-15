@@ -191,13 +191,14 @@ func TestNewHTTPProxyBufferPool(t *testing.T) {
 	proxy := NewHTTPProxy(srv, 0)
 
 	// Get a buffer from the pool
-	buf := proxy.pool.Get().([]byte)
+	bufp := proxy.pool.Get().(*[]byte)
+	buf := *bufp
 	if len(buf) != 32*1024 {
 		t.Errorf("Buffer size = %d, want 32768", len(buf))
 	}
 
 	// Return to pool
-	proxy.pool.Put(buf)
+	proxy.pool.Put(bufp)
 }
 
 // TestProxyRequestOpenStreamError tests that ProxyRequest returns an error when the mux is nil/closed.

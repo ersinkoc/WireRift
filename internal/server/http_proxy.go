@@ -28,7 +28,8 @@ func NewHTTPProxy(server *Server, timeout time.Duration) *HTTPProxy {
 		timeout: timeout,
 		pool: sync.Pool{
 			New: func() any {
-				return make([]byte, 32*1024) // 32 KB buffers
+				b := make([]byte, 32*1024) // 32 KB buffers
+				return &b
 			},
 		},
 	}

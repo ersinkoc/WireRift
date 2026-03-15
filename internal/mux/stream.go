@@ -35,7 +35,6 @@ type Stream struct {
 	windowCh chan struct{} // signals window update
 	state    atomic.Int32
 	closeOnce sync.Once
-	closeErr  error
 
 	// Metadata
 	remoteAddr string
@@ -98,7 +97,7 @@ func (s *Stream) SetMetadata(remoteAddr, protocol, tunnelID string) {
 func (s *Stream) Read(p []byte) (n int, err error) {
 	for {
 		// Try to read from buffer
-		n, err = s.readFromBuffer(p)
+		n, _ = s.readFromBuffer(p)
 		if n > 0 {
 			return n, nil
 		}

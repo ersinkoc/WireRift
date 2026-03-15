@@ -2,7 +2,6 @@ package mux
 
 import (
 	"bytes"
-	"math/rand"
 	"testing"
 )
 
@@ -163,7 +162,9 @@ func TestRingBufferConcurrent(t *testing.T) {
 func BenchmarkRingBufferWrite(b *testing.B) {
 	rb := newRingBuffer(64 * 1024)
 	data := make([]byte, 1024)
-	rand.Read(data)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

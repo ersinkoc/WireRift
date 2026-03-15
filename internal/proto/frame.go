@@ -28,7 +28,8 @@ type Frame struct {
 // headerPool is a pool for reusing header buffers.
 var headerPool = sync.Pool{
 	New: func() any {
-		return make([]byte, HeaderSize)
+		b := make([]byte, HeaderSize)
+		return &b
 	},
 }
 
@@ -46,8 +47,9 @@ func (f *Frame) Encode(w io.Writer) error {
 	}
 
 	// Get header buffer from pool
-	header := headerPool.Get().([]byte)
-	defer headerPool.Put(header)
+	headerp := headerPool.Get().(*[]byte)
+	header := *headerp
+	defer headerPool.Put(headerp)
 
 	// Encode header
 	header[0] = f.Version
@@ -75,8 +77,9 @@ func (f *Frame) Encode(w io.Writer) error {
 // ReadFrame reads a frame from the provided reader.
 func ReadFrame(r io.Reader) (*Frame, error) {
 	// Get header buffer from pool
-	header := headerPool.Get().([]byte)
-	defer headerPool.Put(header)
+	headerp := headerPool.Get().(*[]byte)
+	header := *headerp
+	defer headerPool.Put(headerp)
 
 	// Read header
 	if _, err := io.ReadFull(r, header); err != nil {
