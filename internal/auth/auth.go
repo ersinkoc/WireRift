@@ -13,10 +13,8 @@ import (
 
 // Errors returned by auth operations.
 var (
-	ErrInvalidToken     = errors.New("invalid token")
-	ErrTokenExpired     = errors.New("token expired")
-	ErrUnauthorized     = errors.New("unauthorized")
-	ErrAccountSuspended = errors.New("account suspended")
+	ErrInvalidToken = errors.New("invalid token")
+	ErrUnauthorized = errors.New("unauthorized")
 )
 
 // Token represents an authentication token.

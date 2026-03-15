@@ -9,12 +9,10 @@ import (
 
 // Errors returned by the proto package.
 var (
-	ErrInvalidVersion   = errors.New("invalid protocol version")
-	ErrInvalidFrameType = errors.New("invalid frame type")
-	ErrInvalidStreamID  = errors.New("invalid stream ID")
-	ErrPayloadTooLarge  = errors.New("payload exceeds maximum size")
-	ErrHeaderTooShort   = errors.New("frame header too short")
-	ErrInvalidMagic     = errors.New("invalid magic bytes")
+	ErrInvalidVersion  = errors.New("invalid protocol version")
+	ErrInvalidStreamID = errors.New("invalid stream ID")
+	ErrPayloadTooLarge = errors.New("payload exceeds maximum size")
+	ErrInvalidMagic    = errors.New("invalid magic bytes")
 )
 
 // Frame represents a single protocol frame.

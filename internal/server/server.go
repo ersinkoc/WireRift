@@ -29,13 +29,7 @@ import (
 
 // Errors returned by server operations.
 var (
-	ErrServerClosed       = errors.New("server is closed")
-	ErrTunnelNotFound     = errors.New("tunnel not found")
-	ErrSessionNotFound    = errors.New("session not found")
-	ErrUnauthorized       = errors.New("unauthorized")
-	ErrSubdomainTaken     = errors.New("subdomain is already taken")
-	ErrPortUnavailable    = errors.New("port is unavailable")
-	ErrMaxTunnelsExceeded = errors.New("maximum tunnels exceeded")
+	ErrPortUnavailable = errors.New("port is unavailable")
 )
 
 // Config holds server configuration.
@@ -54,9 +48,6 @@ type Config struct {
 
 	// TCPAddrRange is the range for TCP tunnel ports (e.g., "20000-29999").
 	TCPAddrRange string
-
-	// DashboardAddr is the address for the dashboard API.
-	DashboardAddr string
 
 	// TLSConfig is the TLS configuration for the control plane.
 	TLSConfig *tls.Config
@@ -82,7 +73,6 @@ func DefaultConfig() Config {
 		HTTPAddr:             ":80",
 		HTTPSAddr:            ":443",
 		TCPAddrRange:         "20000-29999",
-		DashboardAddr:        ":4040",
 		HeartbeatInterval:    30 * time.Second,
 		SessionTimeout:       60 * time.Second,
 		MaxTunnelsPerSession: 10,

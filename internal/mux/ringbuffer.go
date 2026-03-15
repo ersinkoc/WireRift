@@ -1,14 +1,7 @@
 package mux
 
 import (
-	"errors"
 	"sync"
-)
-
-// Errors returned by ringBuffer operations.
-var (
-	ErrBufferFull  = errors.New("buffer is full")
-	ErrBufferEmpty = errors.New("buffer is empty")
 )
 
 // maxRingBufferSize is the maximum size a ring buffer can grow to (16 MB).

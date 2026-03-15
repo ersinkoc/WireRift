@@ -24,16 +24,6 @@ export const NAV_ITEMS: NavItem[] = [
   { label: 'Changelog', href: '/changelog' },
 ]
 
-export interface SocialLink {
-  label: string
-  href: string
-  icon: string
-}
-
-export const SOCIAL_LINKS: SocialLink[] = [
-  { label: 'GitHub', href: 'https://github.com/wirerift/wirerift', icon: 'github' },
-]
-
 export const FEATURES = [
   {
     icon: 'Package',

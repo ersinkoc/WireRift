@@ -22,7 +22,6 @@ import (
 // Errors returned by TLS operations.
 var (
 	ErrCertificateNotFound = errors.New("certificate not found")
-	ErrInvalidCertificate  = errors.New("invalid certificate")
 	ErrDomainNotConfigured = errors.New("domain not configured")
 )
 

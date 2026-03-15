@@ -54,20 +54,13 @@ type TunnelRequest struct {
 	PIN        string            `json:"pin,omitempty"`
 }
 
-// TunnelMetadata contains tunnel-specific metadata.
-type TunnelMetadata struct {
-	RemotePort int    `json:"remote_port,omitempty"`
-	Subdomain  string `json:"subdomain,omitempty"`
-}
-
 // TunnelResponse is sent by the server after tunnel allocation.
 type TunnelResponse struct {
-	OK        bool           `json:"ok"`
-	TunnelID  string         `json:"tunnel_id,omitempty"`
-	Type      TunnelType     `json:"type,omitempty"`
-	PublicURL string         `json:"public_url,omitempty"`
-	Metadata  *TunnelMetadata `json:"metadata,omitempty"`
-	Error     string         `json:"error,omitempty"`
+	OK        bool       `json:"ok"`
+	TunnelID  string     `json:"tunnel_id,omitempty"`
+	Type      TunnelType `json:"type,omitempty"`
+	PublicURL string     `json:"public_url,omitempty"`
+	Error     string     `json:"error,omitempty"`
 }
 
 // TunnelClose is sent to close a tunnel.

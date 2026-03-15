@@ -172,11 +172,11 @@ func TestTunnelGetters(t *testing.T) {
 		PublicURL: "https://test.wirerift.dev",
 		LocalAddr: "localhost:3000",
 	}
-	if tunnel.GetPublicURL() != "https://test.wirerift.dev" {
-		t.Errorf("GetPublicURL = %q, want %q", tunnel.GetPublicURL(), "https://test.wirerift.dev")
+	if tunnel.PublicURL != "https://test.wirerift.dev" {
+		t.Errorf("PublicURL = %q, want %q", tunnel.PublicURL, "https://test.wirerift.dev")
 	}
-	if tunnel.GetLocalAddr() != "localhost:3000" {
-		t.Errorf("GetLocalAddr = %q, want %q", tunnel.GetLocalAddr(), "localhost:3000")
+	if tunnel.LocalAddr != "localhost:3000" {
+		t.Errorf("LocalAddr = %q, want %q", tunnel.LocalAddr, "localhost:3000")
 	}
 }
 
@@ -200,9 +200,6 @@ func TestFrameWriterReaderBeforeConnect(t *testing.T) {
 }
 
 func TestClientErrors(t *testing.T) {
-	if ErrClientClosed == nil {
-		t.Error("ErrClientClosed should not be nil")
-	}
 	if ErrNotConnected == nil {
 		t.Error("ErrNotConnected should not be nil")
 	}
@@ -211,9 +208,6 @@ func TestClientErrors(t *testing.T) {
 	}
 	if ErrTunnelFailed == nil {
 		t.Error("ErrTunnelFailed should not be nil")
-	}
-	if ErrReconnectFailed == nil {
-		t.Error("ErrReconnectFailed should not be nil")
 	}
 }
 

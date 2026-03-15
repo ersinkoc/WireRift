@@ -13,10 +13,8 @@ import (
 
 // Errors returned by Mux operations.
 var (
-	ErrMuxClosed       = errors.New("multiplexer is closed")
-	ErrStreamNotFound  = errors.New("stream not found")
-	ErrTooManyStreams  = errors.New("too many active streams")
-	ErrInvalidFrame    = errors.New("invalid frame received")
+	ErrMuxClosed     = errors.New("multiplexer is closed")
+	ErrTooManyStreams = errors.New("too many active streams")
 )
 
 // Config holds multiplexer configuration.

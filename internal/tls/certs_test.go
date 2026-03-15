@@ -272,9 +272,6 @@ func TestCertificateErrors(t *testing.T) {
 	if ErrCertificateNotFound.Error() != "certificate not found" {
 		t.Errorf("ErrCertificateNotFound message = %q", ErrCertificateNotFound.Error())
 	}
-	if ErrInvalidCertificate.Error() != "invalid certificate" {
-		t.Errorf("ErrInvalidCertificate message = %q", ErrInvalidCertificate.Error())
-	}
 	if ErrDomainNotConfigured.Error() != "domain not configured" {
 		t.Errorf("ErrDomainNotConfigured message = %q", ErrDomainNotConfigured.Error())
 	}

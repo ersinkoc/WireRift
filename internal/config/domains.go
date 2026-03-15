@@ -184,15 +184,15 @@ func isValidDomain(domain string) bool {
 		return false
 	}
 	// Basic validation
-	for i, c := range domain {
-		if !isValidDomainChar(c, i) {
+	for _, c := range domain {
+		if !isValidDomainChar(c) {
 			return false
 		}
 	}
 	return true
 }
 
-func isValidDomainChar(c rune, pos int) bool {
+func isValidDomainChar(c rune) bool {
 	return (c >= 'a' && c <= 'z') ||
 		(c >= 'A' && c <= 'Z') ||
 		(c >= '0' && c <= '9') ||

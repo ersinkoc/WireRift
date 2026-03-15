@@ -19,9 +19,8 @@ const (
 
 // Errors returned by Stream operations.
 var (
-	ErrStreamClosed    = errors.New("stream is closed")
-	ErrStreamReset     = errors.New("stream was reset")
-	ErrInvalidStreamID = errors.New("invalid stream ID")
+	ErrStreamClosed = errors.New("stream is closed")
+	ErrStreamReset  = errors.New("stream was reset")
 )
 
 // Stream represents a single bidirectional stream within a multiplexed connection.

@@ -20,11 +20,9 @@ import (
 
 // Errors returned by client operations.
 var (
-	ErrClientClosed    = errors.New("client is closed")
-	ErrNotConnected    = errors.New("not connected to server")
-	ErrAuthFailed      = errors.New("authentication failed")
-	ErrTunnelFailed    = errors.New("tunnel creation failed")
-	ErrReconnectFailed = errors.New("reconnect failed")
+	ErrNotConnected = errors.New("not connected to server")
+	ErrAuthFailed   = errors.New("authentication failed")
+	ErrTunnelFailed = errors.New("tunnel creation failed")
 )
 
 // Config holds client configuration.
@@ -525,16 +523,6 @@ func WithPIN(pin string) HTTPOption {
 // Close closes the tunnel.
 func (t *Tunnel) Close() error {
 	return t.client.CloseTunnel(t.ID)
-}
-
-// GetPublicURL returns the public URL.
-func (t *Tunnel) GetPublicURL() string {
-	return t.PublicURL
-}
-
-// GetLocalAddr returns the local address.
-func (t *Tunnel) GetLocalAddr() string {
-	return t.LocalAddr
 }
 
 // handleStreams accepts incoming streams from the server and dispatches them.
