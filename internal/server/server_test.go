@@ -5388,3 +5388,30 @@ func TestHandleHTTPRequestWithCustomHeaders(t *testing.T) {
 	c1.Close()
 	c2.Close()
 }
+
+// ─── TCP listener error path (invalid port) ───
+
+func TestStartTCPTunnelListener_InvalidPort(t *testing.T) {
+	s := New(DefaultConfig(), nil)
+
+	c1, c2 := net.Pipe()
+	m := mux.New(c1, mux.DefaultConfig())
+	go m.Run()
+	defer func() { c1.Close(); c2.Close() }()
+
+	session := &Session{
+		ID:      "test-sess",
+		Mux:     m,
+		Tunnels: make(map[string]*Tunnel),
+	}
+
+	tunnel := &Tunnel{
+		ID:        "tun-tcp-fail",
+		Type:      "tcp",
+		SessionID: session.ID,
+		Port:      -1,
+	}
+
+	// Should log error and return immediately (invalid port)
+	s.startTCPTunnelListener(-1, tunnel, session)
+}

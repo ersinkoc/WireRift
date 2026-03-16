@@ -1298,3 +1298,26 @@ func TestHandleRequestActionsNoAction(t *testing.T) {
 		t.Errorf("Status = %d, want %d", rec.Code, http.StatusNotFound)
 	}
 }
+
+func TestHandleRequestActionsGETNotAllowed(t *testing.T) {
+	authMgr := auth.NewManager()
+	srv := server.New(server.DefaultConfig(), nil)
+
+	d := New(Config{
+		Server:      srv,
+		AuthManager: authMgr,
+	})
+
+	handler := d.Handler()
+
+	// GET /api/requests/some-id/replay — should be 405 (only POST allowed)
+	req := httptest.NewRequest("GET", "/api/requests/some-id/replay", nil)
+	req.Header.Set("Authorization", "Bearer "+authMgr.DevToken())
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+}
+
