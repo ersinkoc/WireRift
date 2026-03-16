@@ -39,7 +39,14 @@ Open-source, zero-dependency tunnel server and client. Written in Go.
 - **Flow Control** — backpressure handling per stream
 - **Rate Limiting** — per-IP HTTP and per-session tunnel creation limits
 - **Auto Reconnect** — automatic reconnection with tunnel re-creation
-- **Comprehensive Tests** — 99.7% coverage, fuzz tests, stress tests
+- **Health Check** — `/healthz` endpoint for load balancers and orchestrators
+- **Request Tracing** — `X-Request-ID` header auto-generated or preserved
+- **JSON Config** — supports both YAML and JSON config files
+- **User-Defined Tokens** — set your own auth token via flag or environment variable
+- **Advanced Dashboard** — dark/light theme, tabs, keyboard shortcuts, JSON highlighting, cURL export
+- **CSP Security** — nonce-based Content Security Policy on dashboard
+- **Graceful Shutdown** — clean HTTP server drain on SIGTERM/SIGINT
+- **Comprehensive Tests** — 97-100% coverage per package, fuzz tests, stress tests, 34 E2E tests
 
 ## Quick Start
 
@@ -54,22 +61,28 @@ make build
 ### Start the Server
 
 ```bash
-# Basic (self-signed TLS)
+# Development (auto-generated token shown on startup)
+./bin/wirerift-server -domain mytunnel.com -auto-cert
+
+# With fixed token (persists across restarts)
+./bin/wirerift-server -domain mytunnel.com --token my-secret-token
+
+# Or via environment variable
+export WIRERIFT_TOKEN=my-secret-token
 ./bin/wirerift-server -domain mytunnel.com -auto-cert
 
 # Production (Let's Encrypt automatic HTTPS)
 ./bin/wirerift-server -domain mytunnel.com -acme-email admin@mytunnel.com
 
-# Staging (Let's Encrypt test server)
-./bin/wirerift-server -domain mytunnel.com -acme-email admin@mytunnel.com -acme-staging
+# Dashboard available at http://localhost:4040
 ```
 
 ### Create Tunnels
 
 ```bash
-# HTTP tunnel
-wirerift http 3000
-wirerift http 3000 myapp              # custom subdomain
+# HTTP tunnel (use token from server startup)
+wirerift http 3000 --token my-secret-token
+wirerift http 3000 myapp --token my-secret-token  # custom subdomain
 
 # TCP tunnel
 wirerift tcp 5432
@@ -122,6 +135,23 @@ tunnels:
 
 ```bash
 wirerift start wirerift.yaml
+```
+
+JSON config is also supported (auto-detected by file extension):
+
+```json
+{
+  "server": "localhost:4443",
+  "token": "my-secret-token",
+  "tunnels": [
+    {"type": "http", "local_port": 8080, "subdomain": "myapp"},
+    {"type": "tcp", "local_port": 5432}
+  ]
+}
+```
+
+```bash
+wirerift start wirerift.json
 ```
 
 ## Traffic Inspector

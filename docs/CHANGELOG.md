@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.3] - 2026-03-16
+
+### Fixed
+- Auto-reconnect enabled on all CLI commands (was disabled, client exited on connection loss)
+- Dashboard CSS rendering (double-percent escape in Go raw string)
+
+### Changed
+- README updated with v1.4.x features: token auth, JSON config, dashboard, healthz, X-Request-ID
+- Full codebase audit: 0 bugs found, all 15 packages pass, 97-100% coverage
+
 ## [1.4.2] - 2026-03-16
 
 ### Added
