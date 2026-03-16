@@ -5,6 +5,79 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-03-16
+
+### Added
+- **Health check endpoint** (`/healthz`) for load balancer and orchestrator integration
+- **X-Request-ID header** for distributed request tracing (auto-generated or preserved from client)
+- **JSON config file support** (`wirerift.json`) alongside YAML, with auto-fallback
+- **CSP nonce-based security** on dashboard — each request gets a unique script nonce
+- **Healthz benchmark** in benchmark suite
+- **E2E tests** for healthz, X-Request-ID generation, X-Request-ID preservation
+- **2500+ lines of new tests** across all packages
+- Token banner display on server startup with copy-friendly format and export command
+
+### Security
+- **CRITICAL**: Replaced hardcoded HMAC key with per-instance `crypto/rand` secret for PIN cookies
+- **CRITICAL**: Added `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, `IdleTimeout` to all HTTP servers (Slowloris DoS prevention)
+- **CRITICAL**: Fixed `sync.Map` race — empty `&Tunnel{}` placeholder replaced with atomic `LoadOrStore` of real tunnel
+- **CRITICAL**: Fixed `mux.Close()` not called on auth failure — goroutine leak on failed connections
+- Added `Content-Security-Policy` with per-request nonce to dashboard
+- Added `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy` headers
+- CSRF protection: session cookies restricted to GET-only requests on dashboard
+- `Secure` flag on PIN cookies when served over HTTPS
+- `MaxBytesReader` (1MB) on dashboard POST endpoints
+- Generic `"Unauthorized"` error messages (no internal detail leakage)
+- `gosec`, `bodyclose`, `noctx` linters added to CI
+
+### Fixed
+- **CRITICAL**: Reconnect mux race — `handleStreams` and `heartbeatLoop` now receive mux as parameter instead of reading shared `c.mux` field
+- **CRITICAL**: Old mux goroutine leak on reconnect — old mux and connection are explicitly closed before creating new ones
+- **HIGH**: `inspectResponseWriter` now implements `http.Flusher` and `http.Hijacker` — streaming and WebSocket tunnels work with `inspect=true`
+- **HIGH**: Request log slice memory leak — backing array properly released via copy
+- **HIGH**: Nil map panic in `handleTunnelClose` and `handleTunnelRequest` — nil checks added
+- **HIGH**: Silent `Close()` errors on TLS certificate writes — `writeFileAtomic` helper checks close error
+- **HIGH**: ACME `io.ReadAll` without size limit — bounded to 4MB
+- **HIGH**: 6 ignored `json.Unmarshal` errors in ACME flow — all checked
+- DNS case-insensitive subdomain matching (`extractSubdomain` lowercases input)
+- `X-Forwarded-For` now strips port and chains with existing header
+- `time.After` leak in reconnect loop replaced with `time.NewTimer` + `Stop()`
+- `json.Encode` errors explicitly handled in dashboard responses
+- ACME metadata write error now logged (was silently ignored)
+- Non-deterministic domain verification codes — now stored at creation time
+
+### Changed
+- **Server architecture**: `server.go` (1575→1025 lines) split into `pin.go`, `inspect.go`, `http_edge.go`
+- `handleTunnelRequest` (135 lines) refactored into `createHTTPTunnel`, `createTCPTunnel`, `sendTunnelError`
+- `fmt.Sprintf("tcp:%d")` replaced with `strconv.Itoa` + string concatenation
+- ACME operations accept `context.Context` for cancellation support
+- `StartAutoRenewal` uses cancellable context derived from done channel
+- `checkAndRenew` extracted as testable function from renewal loop
+- `GetCertificate` uses `hello.Context()` for ACME request cancellation
+- Client uses shared `http.Client` with connection pooling instead of per-request client
+- `doServe` file server uses `http.Server.Shutdown` for graceful cleanup
+- `recover()` added to all production goroutines (TCP proxy, webhook relay, ACME renewal, stream handler, dashboard)
+- Graceful shutdown for HTTP/HTTPS edge servers via `http.Server.Shutdown`
+- Removed dead code: no-op `init()`, misleading interface assertion, custom `min()` (Go 1.23 builtin)
+
+### Infrastructure
+- **Dockerfile**: `scratch` → `alpine:3.20` with CA certificates, non-root user, healthcheck
+- **docker-compose.yml**: V2 format, TCP port range, healthcheck, command parameters
+- **CI**: Added `golangci-lint` step, coverage artifact upload, threshold adjusted to 90%
+- **Makefile**: Added `test-race`, `fuzz`, `docker`, improved `lint` targets
+- **.golangci.yml**: Added `gosec`, `bodyclose`, `noctx`, `exportloopref` linters
+
+### Test Coverage
+| Package | Before | After |
+|---------|--------|-------|
+| internal/client | 100.0% | 100.0% |
+| internal/config | 100.0% | 100.0% |
+| internal/server | 94.2% | 99.7% |
+| internal/tls | 74.4% | 97.4% |
+| internal/dashboard | 99.2% | 99.3% |
+| cmd/wirerift | 97.5% | 99.6% |
+| Advanced E2E | 30/30 | 34/34 |
+
 ## [1.3.0] - 2026-03-16
 
 ### Added
