@@ -115,18 +115,49 @@ func getEnv(key, defaultVal string) string {
 	return defaultVal
 }
 
-// normalizeDashes converts --flag to -flag so both styles work.
-// Go's flag package only supports single-dash; this makes CLI more intuitive.
-func normalizeDashes(args []string) []string {
-	out := make([]string, len(args))
-	for i, a := range args {
+// normalizeArgs reorders args so flags come before positional arguments
+// and converts --flag to -flag. This allows natural CLI usage like:
+//
+//	wirerift http 8080 --token mytoken  (positional before flags)
+//	wirerift http --token mytoken 8080  (flags before positional)
+//
+// Go's flag package stops parsing at the first non-flag argument,
+// so without reordering, "8080 --token X" would ignore --token.
+func normalizeArgs(args []string) []string {
+	var flags []string
+	var positional []string
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		// Convert --flag to -flag
 		if strings.HasPrefix(a, "--") && !strings.HasPrefix(a, "---") && a != "--" {
-			out[i] = a[1:] // "--token" → "-token"
-		} else {
-			out[i] = a
+			a = a[1:]
 		}
+		if strings.HasPrefix(a, "-") && a != "-" && a != "--" {
+			flags = append(flags, a)
+			// Check if this flag has a value (next arg that doesn't start with -)
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				// Could be a flag value — check if current flag is a bool flag
+				// For simplicity, always treat next arg as value if it doesn't start with -
+				// Exception: if it looks like a port number and current flag is a known bool flag
+				if a == "-v" || a == "-inspect" || a == "-json" || a == "-auto-cert" ||
+					a == "-acme-staging" || a == "-version" {
+					// Bool flags don't consume next arg
+				} else {
+					i++
+					flags = append(flags, args[i])
+				}
+			}
+		} else if a == "--" {
+			// Everything after -- is positional
+			positional = append(positional, args[i+1:]...)
+			break
+		} else {
+			positional = append(positional, a)
+		}
+		i++
 	}
-	return out
+	return append(flags, positional...)
 }
 
 // handleSignals cancels the context on interrupt/SIGTERM.
@@ -173,7 +204,7 @@ func doHTTP(parentCtx context.Context, args []string) error {
 		fmt.Fprintf(os.Stderr, "  wirerift http -subdomain myapp 8080\n")
 	}
 
-	if err := fs.Parse(normalizeDashes(args[2:])); err != nil {
+	if err := fs.Parse(normalizeArgs(args[2:])); err != nil {
 		return err
 	}
 
@@ -303,7 +334,7 @@ func doTCP(parentCtx context.Context, args []string) error {
 		fmt.Fprintf(os.Stderr, "  wirerift tcp 22\n")
 	}
 
-	if err := fs.Parse(normalizeDashes(args[2:])); err != nil {
+	if err := fs.Parse(normalizeArgs(args[2:])); err != nil {
 		return err
 	}
 
@@ -376,7 +407,7 @@ func doStart(parentCtx context.Context, args []string) error {
 		fmt.Fprintf(os.Stderr, "\nDefault config file: wirerift.yaml (also supports .json)\n")
 	}
 
-	if err := fs.Parse(normalizeDashes(args[2:])); err != nil {
+	if err := fs.Parse(normalizeArgs(args[2:])); err != nil {
 		return err
 	}
 
@@ -631,7 +662,7 @@ func doServe(parentCtx context.Context, args []string) error {
 		fmt.Fprintf(os.Stderr, "  wirerift serve -subdomain myapp ./public\n")
 	}
 
-	if err := fs.Parse(normalizeDashes(args[2:])); err != nil {
+	if err := fs.Parse(normalizeArgs(args[2:])); err != nil {
 		return err
 	}
 
@@ -749,7 +780,7 @@ func doList(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeDashes(args[2:])); err != nil {
+	if err := fs.Parse(normalizeArgs(args[2:])); err != nil {
 		return err
 	}
 

@@ -32,17 +32,34 @@ func main() {
 	}
 }
 
-// normalizeDashes converts --flag to -flag so both styles work.
-func normalizeDashes(args []string) []string {
-	out := make([]string, len(args))
-	for i, a := range args {
+// normalizeArgs converts --flag to -flag and reorders so flags come before positional args.
+func normalizeArgs(args []string) []string {
+	var flags []string
+	var positional []string
+	i := 0
+	for i < len(args) {
+		a := args[i]
 		if strings.HasPrefix(a, "--") && !strings.HasPrefix(a, "---") && a != "--" {
-			out[i] = a[1:]
-		} else {
-			out[i] = a
+			a = a[1:]
 		}
+		if strings.HasPrefix(a, "-") && a != "-" && a != "--" {
+			flags = append(flags, a)
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				if a == "-v" || a == "-json" || a == "-auto-cert" || a == "-acme-staging" || a == "-version" {
+				} else {
+					i++
+					flags = append(flags, args[i])
+				}
+			}
+		} else if a == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		} else {
+			positional = append(positional, a)
+		}
+		i++
 	}
-	return out
+	return append(flags, positional...)
 }
 
 func run(parentCtx context.Context, args []string) error {
@@ -97,7 +114,7 @@ Environment Variables:
 `)
 	}
 
-	if err := fs.Parse(normalizeDashes(args)); err != nil {
+	if err := fs.Parse(normalizeArgs(args)); err != nil {
 		return err
 	}
 
