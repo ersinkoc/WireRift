@@ -1317,3 +1317,108 @@ func TestDoHTTP_InvalidAuth(t *testing.T) {
 		t.Fatalf("Expected 'invalid -auth format' error, got: %v", err)
 	}
 }
+
+// --- JSON config tests ---
+
+func TestLoadConfigJSON(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "test.json")
+	cfg := ConfigFile{
+		Server: "json.server:4443",
+		Token:  "json-token",
+		Tunnels: []TunnelConfig{
+			{Type: "http", LocalPort: 8080, Subdomain: "myapp"},
+			{Type: "tcp", LocalPort: 25565},
+		},
+	}
+	data, _ := json.MarshalIndent(cfg, "", "  ")
+	os.WriteFile(f, data, 0644)
+
+	loaded, err := loadConfig(f)
+	if err != nil {
+		t.Fatalf("loadConfig JSON: %v", err)
+	}
+	if loaded.Server != "json.server:4443" {
+		t.Errorf("Server = %q, want json.server:4443", loaded.Server)
+	}
+	if loaded.Token != "json-token" {
+		t.Errorf("Token = %q, want json-token", loaded.Token)
+	}
+	if len(loaded.Tunnels) != 2 {
+		t.Fatalf("Tunnels = %d, want 2", len(loaded.Tunnels))
+	}
+	if loaded.Tunnels[0].Subdomain != "myapp" {
+		t.Errorf("Tunnel[0].Subdomain = %q, want myapp", loaded.Tunnels[0].Subdomain)
+	}
+	if loaded.Tunnels[1].Type != "tcp" {
+		t.Errorf("Tunnel[1].Type = %q, want tcp", loaded.Tunnels[1].Type)
+	}
+}
+
+func TestLoadConfigJSONWithAllFields(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "full.json")
+	cfg := ConfigFile{
+		Server: "test.server:4443",
+		Token:  "tok",
+		Tunnels: []TunnelConfig{
+			{
+				Type:      "http",
+				LocalPort: 8080,
+				Subdomain: "myapp",
+				Whitelist: "1.2.3.4",
+				PIN:       "1234",
+				Auth:      "user:pass",
+				Inspect:   true,
+				Headers:   "X-Test:value",
+			},
+		},
+	}
+	data, _ := json.MarshalIndent(cfg, "", "  ")
+	os.WriteFile(f, data, 0644)
+
+	loaded, err := loadConfig(f)
+	if err != nil {
+		t.Fatalf("loadConfig JSON: %v", err)
+	}
+	tun := loaded.Tunnels[0]
+	if tun.Whitelist != "1.2.3.4" {
+		t.Errorf("Whitelist = %q", tun.Whitelist)
+	}
+	if tun.PIN != "1234" {
+		t.Errorf("PIN = %q", tun.PIN)
+	}
+	if tun.Auth != "user:pass" {
+		t.Errorf("Auth = %q", tun.Auth)
+	}
+	if !tun.Inspect {
+		t.Error("Inspect should be true")
+	}
+	if tun.Headers != "X-Test:value" {
+		t.Errorf("Headers = %q", tun.Headers)
+	}
+}
+
+func TestLoadConfigJSONInvalid(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "bad.json")
+	os.WriteFile(f, []byte("{invalid json"), 0644)
+
+	_, err := loadConfig(f)
+	if err == nil {
+		t.Error("Expected error for invalid JSON")
+	}
+}
+
+func TestLoadConfigJSONEnvDefaults(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "empty.json")
+	os.WriteFile(f, []byte(`{"tunnels":[]}`), 0644)
+
+	os.Setenv("WIRERIFT_SERVER", "env.server:9999")
+	defer os.Unsetenv("WIRERIFT_SERVER")
+
+	loaded, err := loadConfig(f)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if loaded.Server != "env.server:9999" {
+		t.Errorf("Server = %q, want env.server:9999 from env", loaded.Server)
+	}
+}

@@ -2,12 +2,8 @@ package server
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
 	"crypto/tls"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -92,6 +88,13 @@ type Server struct {
 	controlListener net.Listener
 	httpListener    net.Listener
 	httpsListener   net.Listener
+
+	// HTTP servers (for graceful shutdown)
+	httpServer  *http.Server
+	httpsServer *http.Server
+
+	// PIN HMAC secret (generated at startup)
+	pinSecret []byte
 
 	// State
 	sessions sync.Map // map[string]*Session
@@ -190,6 +193,9 @@ func New(config Config, logger *slog.Logger) *Server {
 		}
 	}
 
+	pinSecret := make([]byte, 32)
+	rand.Read(pinSecret)
+
 	s := &Server{
 		config:       config,
 		logger:       logger,
@@ -199,6 +205,7 @@ func New(config Config, logger *slog.Logger) *Server {
 		tcpPortEnd:   portEnd,
 		rateLimiter:  ratelimit.NewManager(100, 50),
 		maxLogs:      500, // Keep last 500 requests for inspection
+		pinSecret:    pinSecret,
 	}
 
 	// Store portStart-1 so first Add(1) yields portStart
@@ -260,15 +267,20 @@ func (s *Server) Start() error {
 func (s *Server) Stop() error {
 	s.cancel()
 
-	// Close listeners
+	// Graceful shutdown of HTTP servers
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	if s.httpServer != nil {
+		s.httpServer.Shutdown(shutdownCtx)
+	}
+	if s.httpsServer != nil {
+		s.httpsServer.Shutdown(shutdownCtx)
+	}
+
+	// Close control listener
 	if s.controlListener != nil {
 		s.controlListener.Close()
-	}
-	if s.httpListener != nil {
-		s.httpListener.Close()
-	}
-	if s.httpsListener != nil {
-		s.httpsListener.Close()
 	}
 
 	// Close all sessions
@@ -464,139 +476,137 @@ func (s *Server) handleTunnelRequests(m *mux.Mux, session *Session) {
 }
 
 // handleTunnelRequest processes a tunnel creation request.
+// sendTunnelError sends a tunnel error response.
+func sendTunnelError(m *mux.Mux, msg string) {
+	resp := &proto.TunnelResponse{OK: false, Error: msg}
+	respFrame, _ := proto.EncodeJSONPayload(proto.FrameTunnelRes, 0, resp)
+	m.GetFrameWriter().Write(respFrame)
+}
+
 func (s *Server) handleTunnelRequest(m *mux.Mux, session *Session, frame *proto.Frame) {
 	var req proto.TunnelRequest
 	if err := proto.DecodeJSONPayload(frame, &req); err != nil {
-		resp := &proto.TunnelResponse{OK: false, Error: "invalid request"}
-		respFrame, _ := proto.EncodeJSONPayload(proto.FrameTunnelRes, 0, resp)
-		m.GetFrameWriter().Write(respFrame)
+		sendTunnelError(m, "invalid request")
 		return
 	}
 
-	// Rate limit tunnel creation by session ID
 	if !s.rateLimiter.Allow("tunnel:" + session.ID) {
-		resp := &proto.TunnelResponse{OK: false, Error: "rate limit exceeded"}
-		respFrame, _ := proto.EncodeJSONPayload(proto.FrameTunnelRes, 0, resp)
-		m.GetFrameWriter().Write(respFrame)
+		sendTunnelError(m, "rate limit exceeded")
 		return
 	}
 
 	session.mu.Lock()
-	if len(session.Tunnels) >= s.config.MaxTunnelsPerSession {
+	if session.Tunnels == nil || len(session.Tunnels) >= s.config.MaxTunnelsPerSession {
 		session.mu.Unlock()
-		resp := &proto.TunnelResponse{OK: false, Error: "max tunnels exceeded"}
-		respFrame, _ := proto.EncodeJSONPayload(proto.FrameTunnelRes, 0, resp)
-		m.GetFrameWriter().Write(respFrame)
+		sendTunnelError(m, "max tunnels exceeded")
 		return
 	}
 	session.mu.Unlock()
 
-	tunnelID := fmt.Sprintf("tun_%s", generateSubdomain())
+	tunnelID := "tun_" + generateSubdomain()
 
 	switch req.Type {
 	case proto.TunnelTypeHTTP:
-		subdomain := req.Subdomain
-		if subdomain == "" {
-			subdomain = generateSubdomain()
-		}
-
-		// Validate subdomain
-		if !utils.IsValidSubdomain(subdomain) {
-			resp := &proto.TunnelResponse{OK: false, Error: "invalid subdomain"}
-			respFrame, _ := proto.EncodeJSONPayload(proto.FrameTunnelRes, 0, resp)
-			m.GetFrameWriter().Write(respFrame)
-			return
-		}
-
-		// Check if subdomain is taken
-		if _, loaded := s.tunnels.LoadOrStore(subdomain, &Tunnel{}); loaded {
-			resp := &proto.TunnelResponse{OK: false, Error: "subdomain already taken"}
-			respFrame, _ := proto.EncodeJSONPayload(proto.FrameTunnelRes, 0, resp)
-			m.GetFrameWriter().Write(respFrame)
-			return
-		}
-
-		tunnel := &Tunnel{
-			ID:         tunnelID,
-			Type:       proto.TunnelTypeHTTP,
-			SessionID:  session.ID,
-			Subdomain:  subdomain,
-			PublicURL:  fmt.Sprintf("http://%s.%s", subdomain, s.config.Domain),
-			LocalAddr:  req.LocalAddr,
-			AllowedIPs: req.AllowedIPs,
-			PIN:        req.PIN,
-			Auth:       req.Auth,
-			Headers:    req.Headers,
-			Inspect:    req.Inspect,
-			CreatedAt:  time.Now(),
-		}
-		s.tunnels.Store(subdomain, tunnel)
-
-		session.mu.Lock()
-		session.Tunnels[tunnelID] = tunnel
-		session.mu.Unlock()
-
-		resp := &proto.TunnelResponse{
-			OK:        true,
-			TunnelID:  tunnelID,
-			Type:      proto.TunnelTypeHTTP,
-			PublicURL: tunnel.PublicURL,
-		}
-		respFrame, _ := proto.EncodeJSONPayload(proto.FrameTunnelRes, 0, resp)
-		m.GetFrameWriter().Write(respFrame)
-
-		s.logger.Info("tunnel created", "id", tunnelID, "type", "http", "subdomain", subdomain)
-
+		s.createHTTPTunnel(m, session, &req, tunnelID)
 	case proto.TunnelTypeTCP:
-		port, err := s.allocatePort()
-		if err != nil {
-			resp := &proto.TunnelResponse{OK: false, Error: "no ports available"}
-			respFrame, _ := proto.EncodeJSONPayload(proto.FrameTunnelRes, 0, resp)
-			m.GetFrameWriter().Write(respFrame)
-			return
-		}
-
-		tunnel := &Tunnel{
-			ID:         tunnelID,
-			Type:       proto.TunnelTypeTCP,
-			SessionID:  session.ID,
-			Port:       port,
-			PublicURL:  fmt.Sprintf("tcp://%s:%d", s.config.Domain, port),
-			LocalAddr:  req.LocalAddr,
-			AllowedIPs: req.AllowedIPs,
-			CreatedAt:  time.Now(),
-		}
-
-		portKey := fmt.Sprintf("tcp:%d", port)
-		s.tunnels.Store(portKey, tunnel)
-
-		session.mu.Lock()
-		session.Tunnels[tunnelID] = tunnel
-		session.mu.Unlock()
-
-		// Start TCP listener for this tunnel
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			s.startTCPTunnelListener(port, tunnel, session)
-		}()
-
-		resp := &proto.TunnelResponse{
-			OK:        true,
-			TunnelID:  tunnelID,
-			Type:      proto.TunnelTypeTCP,
-			PublicURL: tunnel.PublicURL,
-		}
-		respFrame, _ := proto.EncodeJSONPayload(proto.FrameTunnelRes, 0, resp)
-		m.GetFrameWriter().Write(respFrame)
-
-		s.logger.Info("tunnel created", "id", tunnelID, "type", "tcp", "port", port)
-
+		s.createTCPTunnel(m, session, &req, tunnelID)
 	default:
-		resp := &proto.TunnelResponse{OK: false, Error: "unsupported tunnel type"}
-		respFrame, _ := proto.EncodeJSONPayload(proto.FrameTunnelRes, 0, resp)
-		m.GetFrameWriter().Write(respFrame)
+		sendTunnelError(m, "unsupported tunnel type")
 	}
+}
+
+// createHTTPTunnel handles HTTP tunnel creation.
+func (s *Server) createHTTPTunnel(m *mux.Mux, session *Session, req *proto.TunnelRequest, tunnelID string) {
+	subdomain := req.Subdomain
+	if subdomain == "" {
+		subdomain = generateSubdomain()
+	}
+
+	if !utils.IsValidSubdomain(subdomain) {
+		sendTunnelError(m, "invalid subdomain")
+		return
+	}
+
+	// Build the full tunnel before storing to avoid a race where another
+	// goroutine reads an empty placeholder between LoadOrStore and Store.
+	tunnel := &Tunnel{
+		ID:         tunnelID,
+		Type:       proto.TunnelTypeHTTP,
+		SessionID:  session.ID,
+		Subdomain:  subdomain,
+		PublicURL:  "http://" + subdomain + "." + s.config.Domain,
+		LocalAddr:  req.LocalAddr,
+		AllowedIPs: req.AllowedIPs,
+		PIN:        req.PIN,
+		Auth:       req.Auth,
+		Headers:    req.Headers,
+		Inspect:    req.Inspect,
+		CreatedAt:  time.Now(),
+	}
+
+	if _, loaded := s.tunnels.LoadOrStore(subdomain, tunnel); loaded {
+		sendTunnelError(m, "subdomain already taken")
+		return
+	}
+
+	session.mu.Lock()
+	session.Tunnels[tunnelID] = tunnel
+	session.mu.Unlock()
+
+	resp := &proto.TunnelResponse{
+		OK:        true,
+		TunnelID:  tunnelID,
+		Type:      proto.TunnelTypeHTTP,
+		PublicURL: tunnel.PublicURL,
+	}
+	respFrame, _ := proto.EncodeJSONPayload(proto.FrameTunnelRes, 0, resp)
+	m.GetFrameWriter().Write(respFrame)
+
+	s.logger.Info("tunnel created", "id", tunnelID, "type", "http", "subdomain", subdomain)
+}
+
+// createTCPTunnel handles TCP tunnel creation.
+func (s *Server) createTCPTunnel(m *mux.Mux, session *Session, req *proto.TunnelRequest, tunnelID string) {
+	port, err := s.allocatePort()
+	if err != nil {
+		sendTunnelError(m, "no ports available")
+		return
+	}
+
+	tunnel := &Tunnel{
+		ID:         tunnelID,
+		Type:       proto.TunnelTypeTCP,
+		SessionID:  session.ID,
+		Port:       port,
+		PublicURL:  "tcp://" + s.config.Domain + ":" + strconv.Itoa(port),
+		LocalAddr:  req.LocalAddr,
+		AllowedIPs: req.AllowedIPs,
+		CreatedAt:  time.Now(),
+	}
+
+	portKey := "tcp:" + strconv.Itoa(port)
+	s.tunnels.Store(portKey, tunnel)
+
+	session.mu.Lock()
+	session.Tunnels[tunnelID] = tunnel
+	session.mu.Unlock()
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.startTCPTunnelListener(port, tunnel, session)
+	}()
+
+	resp := &proto.TunnelResponse{
+		OK:        true,
+		TunnelID:  tunnelID,
+		Type:      proto.TunnelTypeTCP,
+		PublicURL: tunnel.PublicURL,
+	}
+	respFrame, _ := proto.EncodeJSONPayload(proto.FrameTunnelRes, 0, resp)
+	m.GetFrameWriter().Write(respFrame)
+
+	s.logger.Info("tunnel created", "id", tunnelID, "type", "tcp", "port", port)
 }
 
 // handleTunnelClose processes a tunnel close request.
@@ -607,6 +617,10 @@ func (s *Server) handleTunnelClose(session *Session, frame *proto.Frame) {
 	}
 
 	session.mu.Lock()
+	if session.Tunnels == nil {
+		session.mu.Unlock()
+		return
+	}
 	tunnel, ok := session.Tunnels[req.TunnelID]
 	if ok {
 		delete(session.Tunnels, req.TunnelID)
@@ -622,7 +636,7 @@ func (s *Server) handleTunnelClose(session *Session, frame *proto.Frame) {
 	case proto.TunnelTypeHTTP:
 		s.tunnels.Delete(tunnel.Subdomain)
 	case proto.TunnelTypeTCP:
-		portKey := fmt.Sprintf("tcp:%d", tunnel.Port)
+		portKey := "tcp:" + strconv.Itoa(tunnel.Port)
 		s.tunnels.Delete(portKey)
 		s.releasePort(tunnel.Port)
 	}
@@ -652,7 +666,7 @@ func (s *Server) removeSession(sessionID string) {
 		case proto.TunnelTypeHTTP:
 			s.tunnels.Delete(tunnel.Subdomain)
 		case proto.TunnelTypeTCP:
-			portKey := fmt.Sprintf("tcp:%d", tunnel.Port)
+			portKey := "tcp:" + strconv.Itoa(tunnel.Port)
 			s.tunnels.Delete(portKey)
 			s.releasePort(tunnel.Port)
 		}
@@ -685,7 +699,12 @@ func (s *Server) startTCPTunnelListener(port int, tunnel *Tunnel, session *Sessi
 		}
 
 		go func() {
-			defer conn.Close()
+			defer func() {
+				conn.Close()
+				if r := recover(); r != nil {
+					s.logger.Error("panic in TCP proxy", "tunnel", tunnel.ID, "error", r)
+				}
+			}()
 			s.proxyTCPConnection(conn, tunnel, session)
 		}()
 	}
@@ -750,13 +769,19 @@ func (s *Server) startHTTPListener() error {
 		return err
 	}
 
-	handler := http.HandlerFunc(s.handleHTTPRequest)
-	server := &http.Server{Handler: handler}
+	s.httpServer = &http.Server{
+		Handler:           http.HandlerFunc(s.handleHTTPRequest),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		if err := server.Serve(s.httpListener); err != nil && err != http.ErrServerClosed {
+		if err := s.httpServer.Serve(s.httpListener); err != nil && err != http.ErrServerClosed {
 			s.logger.Error("HTTP server error", "error", err)
 		}
 	}()
@@ -773,231 +798,24 @@ func (s *Server) startHTTPSListener() error {
 	tlsListener := tls.NewListener(ln, s.config.TLSConfig)
 	s.httpsListener = tlsListener
 
-	handler := http.HandlerFunc(s.handleHTTPRequest)
-	server := &http.Server{Handler: handler}
+	s.httpsServer = &http.Server{
+		Handler:           http.HandlerFunc(s.handleHTTPRequest),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		if err := server.Serve(tlsListener); err != nil && err != http.ErrServerClosed {
+		if err := s.httpsServer.Serve(tlsListener); err != nil && err != http.ErrServerClosed {
 			s.logger.Error("HTTPS server error", "error", err)
 		}
 	}()
 
 	return nil
-}
-
-// handleHTTPRequest handles incoming HTTP requests.
-func (s *Server) handleHTTPRequest(w http.ResponseWriter, r *http.Request) {
-	// Serve ACME HTTP-01 challenges before any other processing
-	if strings.HasPrefix(r.URL.Path, "/.well-known/acme-challenge/") && s.config.ACMEChallengeHandler != nil {
-		s.config.ACMEChallengeHandler(w, r)
-		return
-	}
-
-	// Rate limit by client IP
-	clientIP := r.RemoteAddr
-	if idx := strings.LastIndex(clientIP, ":"); idx > 0 {
-		clientIP = clientIP[:idx]
-	}
-	if !s.rateLimiter.Allow(clientIP) {
-		http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
-		return
-	}
-
-	// Extract subdomain from Host header
-	host := r.Host
-	subdomain := extractSubdomain(host, s.config.Domain)
-	if subdomain == "" {
-		http.Error(w, "Invalid host", http.StatusBadRequest)
-		return
-	}
-
-	// Look up tunnel
-	tunnel, ok := s.getTunnelBySubdomain(subdomain)
-	if !ok {
-		http.Error(w, "Tunnel not found", http.StatusBadGateway)
-		return
-	}
-
-	// Check IP whitelist
-	tunnel.mu.RLock()
-	allowedIPs := tunnel.AllowedIPs
-	pin := tunnel.PIN
-	tunnelAuth := tunnel.Auth
-	customHeaders := tunnel.Headers
-	inspect := tunnel.Inspect
-	tunnel.mu.RUnlock()
-
-	if len(allowedIPs) > 0 {
-		if !s.isIPAllowed(clientIP, allowedIPs) {
-			http.Error(w, "Forbidden: your IP is not whitelisted", http.StatusForbidden)
-			return
-		}
-	}
-
-	// Check Basic Auth
-	if tunnelAuth != nil && tunnelAuth.Type == "basic" {
-		if !s.checkBasicAuth(w, r, tunnelAuth.Username, tunnelAuth.Password) {
-			return
-		}
-	}
-
-	// Check PIN protection
-	if pin != "" {
-		if !s.checkPIN(w, r, pin, subdomain) {
-			return
-		}
-	}
-
-	// Get session
-	session, ok := s.getSession(tunnel.SessionID)
-	if !ok {
-		http.Error(w, "Session not found", http.StatusBadGateway)
-		return
-	}
-
-	// Track request start for inspector
-	var reqStart time.Time
-	if inspect {
-		reqStart = time.Now()
-	}
-
-	// Wrap response writer to capture status/headers for inspection and custom headers
-	wrapped := &inspectResponseWriter{
-		ResponseWriter: w,
-		customHeaders:  customHeaders,
-		statusCode:     200,
-	}
-
-	// Forward request through tunnel
-	s.forwardHTTPRequest(wrapped, r, session, tunnel)
-
-	// Log request for inspection
-	if inspect {
-		s.logRequest(tunnel, r, wrapped, clientIP, reqStart)
-	}
-}
-
-// forwardHTTPRequest forwards an HTTP request through the tunnel.
-func (s *Server) forwardHTTPRequest(w http.ResponseWriter, r *http.Request, session *Session, tunnel *Tunnel) {
-	if IsWebSocketRequest(r) {
-		s.forwardWebSocket(w, r, session, tunnel)
-		return
-	}
-
-	// 1. Open a new mux stream
-	stream, err := session.Mux.OpenStream()
-	if err != nil {
-		http.Error(w, "Failed to open stream", http.StatusBadGateway)
-		return
-	}
-	defer stream.Close()
-
-	// 2. Send STREAM_OPEN frame with metadata
-	openFrame, _ := StreamOpenForHTTP(tunnel.ID, stream.ID(), r.RemoteAddr)
-	if err := session.Mux.GetFrameWriter().Write(openFrame); err != nil {
-		http.Error(w, "Failed to send stream open", http.StatusBadGateway)
-		return
-	}
-
-	// 3. Serialize the HTTP request and write through the stream
-	reqData, err := SerializeRequest(r)
-	if err != nil {
-		http.Error(w, "Failed to serialize request", http.StatusInternalServerError)
-		return
-	}
-	if _, err := stream.Write(reqData); err != nil {
-		http.Error(w, "Failed to write request to stream", http.StatusBadGateway)
-		return
-	}
-
-	// 4. Read response data from the stream (limit to 64 MB to prevent memory exhaustion)
-	respData, err := io.ReadAll(io.LimitReader(stream, 64*1024*1024))
-	if err != nil {
-		http.Error(w, "Failed to read response from stream", http.StatusBadGateway)
-		return
-	}
-
-	// 5. Deserialize the response
-	resp, err := DeserializeResponse(respData)
-	if err != nil {
-		http.Error(w, "Failed to deserialize response", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-
-	// Track bytes
-	s.bytesIn.Add(int64(len(reqData)))
-	s.bytesOut.Add(int64(len(respData)))
-
-	// 6. Write the response back to the edge HTTP client
-	WriteResponse(w, resp)
-}
-
-// forwardWebSocket handles WebSocket upgrade requests by hijacking the connection
-// and performing bidirectional copy between the client and the tunnel stream.
-func (s *Server) forwardWebSocket(w http.ResponseWriter, r *http.Request, session *Session, tunnel *Tunnel) {
-	// Hijack the HTTP connection to get raw TCP access
-	hijacker, ok := w.(http.Hijacker)
-	if !ok {
-		http.Error(w, "WebSocket not supported", http.StatusInternalServerError)
-		return
-	}
-
-	// Open a mux stream
-	stream, err := session.Mux.OpenStream()
-	if err != nil {
-		http.Error(w, "Failed to open stream", http.StatusBadGateway)
-		return
-	}
-	defer stream.Close()
-
-	// Send STREAM_OPEN
-	openFrame, _ := StreamOpenForHTTP(tunnel.ID, stream.ID(), r.RemoteAddr)
-	if err := session.Mux.GetFrameWriter().Write(openFrame); err != nil {
-		http.Error(w, "Failed to send stream open", http.StatusBadGateway)
-		return
-	}
-
-	// Serialize and send the upgrade request
-	reqData, err := SerializeRequest(r)
-	if err != nil {
-		http.Error(w, "Failed to serialize request", http.StatusInternalServerError)
-		return
-	}
-	if _, err := stream.Write(reqData); err != nil {
-		http.Error(w, "Failed to write request", http.StatusBadGateway)
-		return
-	}
-
-	// Hijack the connection
-	conn, bufrw, err := hijacker.Hijack()
-	if err != nil {
-		return
-	}
-	defer conn.Close()
-
-	// Bidirectional copy between hijacked conn and stream
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		io.Copy(conn, stream)
-		conn.Close()
-	}()
-	go func() {
-		defer wg.Done()
-		// First flush any buffered data
-		if bufrw.Reader.Buffered() > 0 {
-			buffered := make([]byte, bufrw.Reader.Buffered())
-			bufrw.Read(buffered)
-			stream.Write(buffered)
-		}
-		io.Copy(stream, conn)
-		stream.Close()
-	}()
-	wg.Wait()
 }
 
 // getTunnelBySubdomain looks up a tunnel by subdomain.
@@ -1037,369 +855,6 @@ func (s *Server) allocatePort() (int, error) {
 // releasePort releases a TCP port.
 func (s *Server) releasePort(port int) {
 	s.tcpPorts.Delete(port)
-}
-
-// isIPAllowed checks if the given client IP is in the allowed list.
-// Supports exact IP match and CIDR notation.
-func (s *Server) isIPAllowed(clientIP string, allowedIPs []string) bool {
-	// Strip brackets from IPv6
-	clientIP = strings.TrimPrefix(clientIP, "[")
-	clientIP = strings.TrimSuffix(clientIP, "]")
-
-	parsedClient := net.ParseIP(clientIP)
-
-	for _, allowed := range allowedIPs {
-		// Try CIDR match
-		if strings.Contains(allowed, "/") {
-			_, cidr, err := net.ParseCIDR(allowed)
-			if err == nil && parsedClient != nil && cidr.Contains(parsedClient) {
-				return true
-			}
-			continue
-		}
-
-		// Exact IP match
-		allowedIP := net.ParseIP(allowed)
-		if allowedIP != nil && parsedClient != nil && allowedIP.Equal(parsedClient) {
-			return true
-		}
-
-		// String match fallback (e.g. unresolvable formats)
-		if clientIP == allowed {
-			return true
-		}
-	}
-	return false
-}
-
-// checkBasicAuth validates HTTP Basic Authentication on a tunnel.
-func (s *Server) checkBasicAuth(w http.ResponseWriter, r *http.Request, username, password string) bool {
-	u, p, ok := r.BasicAuth()
-	if !ok || subtle.ConstantTimeCompare([]byte(u), []byte(username)) != 1 ||
-		subtle.ConstantTimeCompare([]byte(p), []byte(password)) != 1 {
-		w.Header().Set("WWW-Authenticate", `Basic realm="WireRift Tunnel"`)
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return false
-	}
-	return true
-}
-
-// inspectResponseWriter wraps http.ResponseWriter to capture status and inject custom headers.
-type inspectResponseWriter struct {
-	http.ResponseWriter
-	customHeaders map[string]string
-	statusCode    int
-	written       bool
-}
-
-func (w *inspectResponseWriter) WriteHeader(code int) {
-	if w.written {
-		return
-	}
-	w.written = true
-	w.statusCode = code
-	// Inject custom response headers before writing
-	for k, v := range w.customHeaders {
-		w.ResponseWriter.Header().Set(k, v)
-	}
-	w.ResponseWriter.WriteHeader(code)
-}
-
-func (w *inspectResponseWriter) Write(b []byte) (int, error) {
-	if !w.written {
-		w.WriteHeader(http.StatusOK)
-	}
-	return w.ResponseWriter.Write(b)
-}
-
-// logRequest captures a request/response pair for the traffic inspector.
-func (s *Server) logRequest(tunnel *Tunnel, r *http.Request, w *inspectResponseWriter, clientIP string, start time.Time) {
-	reqHeaders := make(map[string]string)
-	for k := range r.Header {
-		reqHeaders[k] = r.Header.Get(k)
-	}
-	resHeaders := make(map[string]string)
-	for k := range w.Header() {
-		resHeaders[k] = w.Header().Get(k)
-	}
-
-	log := RequestLog{
-		ID:         fmt.Sprintf("req_%s", generateSubdomain()),
-		TunnelID:   tunnel.ID,
-		Method:     r.Method,
-		Path:       r.URL.Path,
-		StatusCode: w.statusCode,
-		Duration:   time.Since(start),
-		ReqHeaders: reqHeaders,
-		ResHeaders: resHeaders,
-		ReqSize:    r.ContentLength,
-		ClientIP:   clientIP,
-		Timestamp:  start,
-	}
-
-	s.logMu.Lock()
-	s.requestLogs = append(s.requestLogs, log)
-	if len(s.requestLogs) > s.maxLogs {
-		s.requestLogs = s.requestLogs[len(s.requestLogs)-s.maxLogs:]
-	}
-	s.logMu.Unlock()
-}
-
-// GetRequestLogs returns captured request logs, optionally filtered by tunnel ID.
-func (s *Server) GetRequestLogs(tunnelID string, limit int) []RequestLog {
-	s.logMu.RLock()
-	defer s.logMu.RUnlock()
-
-	if limit <= 0 || limit > len(s.requestLogs) {
-		limit = len(s.requestLogs)
-	}
-
-	var result []RequestLog
-	// Iterate backwards (newest first)
-	for i := len(s.requestLogs) - 1; i >= 0 && len(result) < limit; i-- {
-		if tunnelID == "" || s.requestLogs[i].TunnelID == tunnelID {
-			result = append(result, s.requestLogs[i])
-		}
-	}
-	return result
-}
-
-// ReplayRequest replays a captured request by ID.
-func (s *Server) ReplayRequest(logID string) (*RequestLog, error) {
-	s.logMu.RLock()
-	var original *RequestLog
-	for i := range s.requestLogs {
-		if s.requestLogs[i].ID == logID {
-			orig := s.requestLogs[i]
-			original = &orig
-			break
-		}
-	}
-	s.logMu.RUnlock()
-
-	if original == nil {
-		return nil, fmt.Errorf("request log not found: %s", logID)
-	}
-
-	// Find the tunnel
-	tunnel, ok := s.getTunnelByID(original.TunnelID)
-	if !ok {
-		return nil, fmt.Errorf("tunnel not found: %s", original.TunnelID)
-	}
-
-	session, ok := s.getSession(tunnel.SessionID)
-	if !ok {
-		return nil, fmt.Errorf("session not found")
-	}
-
-	// Create a new HTTP request from the log
-	req, _ := http.NewRequest(original.Method, original.Path, nil)
-	for k, v := range original.ReqHeaders {
-		req.Header.Set(k, v)
-	}
-	req.Host = tunnel.Subdomain + "." + s.config.Domain
-
-	// Open stream and forward
-	stream, err := session.Mux.OpenStream()
-	if err != nil {
-		return nil, fmt.Errorf("open stream: %w", err)
-	}
-	defer stream.Close()
-
-	openFrame, _ := StreamOpenForHTTP(tunnel.ID, stream.ID(), original.ClientIP)
-	if err := session.Mux.GetFrameWriter().Write(openFrame); err != nil {
-		return nil, fmt.Errorf("send stream open: %w", err)
-	}
-
-	reqData, _ := SerializeRequest(req)
-	stream.Write(reqData)
-
-	respData, _ := io.ReadAll(io.LimitReader(stream, 64*1024*1024))
-	resp, err := DeserializeResponse(respData)
-	if err != nil {
-		return nil, fmt.Errorf("deserialize: %w", err)
-	}
-	defer resp.Body.Close()
-
-	resHeaders := make(map[string]string)
-	for k := range resp.Header {
-		resHeaders[k] = resp.Header.Get(k)
-	}
-
-	replay := &RequestLog{
-		ID:         fmt.Sprintf("req_%s", generateSubdomain()),
-		TunnelID:   original.TunnelID,
-		Method:     original.Method,
-		Path:       original.Path,
-		StatusCode: resp.StatusCode,
-		Duration:   0,
-		ReqHeaders: original.ReqHeaders,
-		ResHeaders: resHeaders,
-		ClientIP:   "replay",
-		Timestamp:  time.Now(),
-	}
-
-	s.logMu.Lock()
-	s.requestLogs = append(s.requestLogs, *replay)
-	s.logMu.Unlock()
-
-	return replay, nil
-}
-
-// getTunnelByID looks up a tunnel by ID across all stored tunnels.
-func (s *Server) getTunnelByID(tunnelID string) (*Tunnel, bool) {
-	var found *Tunnel
-	s.tunnels.Range(func(key, value any) bool {
-		if t, ok := value.(*Tunnel); ok && t.ID == tunnelID {
-			found = t
-			return false
-		}
-		return true
-	})
-	return found, found != nil
-}
-
-// pinMAC computes an HMAC of the PIN for safe cookie storage.
-func pinMAC(pin, subdomain string) string {
-	mac := hmac.New(sha256.New, []byte("wirerift-pin-key-"+subdomain))
-	mac.Write([]byte(pin))
-	return hex.EncodeToString(mac.Sum(nil))
-}
-
-// pinMatch performs constant-time comparison of a submitted PIN against the expected PIN.
-func pinMatch(submitted, expected string) bool {
-	return subtle.ConstantTimeCompare([]byte(submitted), []byte(expected)) == 1
-}
-
-// checkPIN validates PIN protection for a tunnel.
-// Returns true if access is allowed, false if response was written (PIN page or error).
-func (s *Server) checkPIN(w http.ResponseWriter, r *http.Request, pin, subdomain string) bool {
-	cookieName := "wirerift_pin_" + subdomain
-	expectedMAC := pinMAC(pin, subdomain)
-
-	// Check PIN cookie (stores HMAC, not raw PIN)
-	if cookie, err := r.Cookie(cookieName); err == nil {
-		if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(expectedMAC)) == 1 {
-			return true
-		}
-	}
-
-	// Check X-WireRift-PIN header (for API/CLI access)
-	if headerPIN := r.Header.Get("X-WireRift-PIN"); headerPIN != "" && pinMatch(headerPIN, pin) {
-		return true
-	}
-
-	// setPINcookie sets a secure HMAC-based PIN cookie
-	setPINcookie := func() {
-		http.SetCookie(w, &http.Cookie{
-			Name:     cookieName,
-			Value:    expectedMAC,
-			Path:     "/",
-			MaxAge:   86400, // 24 hours
-			HttpOnly: true,
-			SameSite: http.SameSiteStrictMode,
-		})
-	}
-
-	// Check ?pin= query parameter
-	if queryPIN := r.URL.Query().Get("pin"); queryPIN != "" && pinMatch(queryPIN, pin) {
-		setPINcookie()
-		// Redirect to clean URL (strip pin param)
-		q := r.URL.Query()
-		q.Del("pin")
-		cleanURL := r.URL.Path
-		if encoded := q.Encode(); encoded != "" {
-			cleanURL += "?" + encoded
-		}
-		http.Redirect(w, r, cleanURL, http.StatusFound)
-		return false
-	}
-
-	// Handle POST from PIN form
-	if r.Method == http.MethodPost && r.Header.Get("Content-Type") == "application/x-www-form-urlencoded" {
-		r.ParseForm()
-		if pinMatch(r.FormValue("pin"), pin) {
-			setPINcookie()
-			http.Redirect(w, r, r.URL.Path, http.StatusFound)
-			return false
-		}
-		// Wrong PIN - show form again with error
-		s.servePINPage(w, subdomain, true)
-		return false
-	}
-
-	// Show PIN entry page
-	s.servePINPage(w, subdomain, false)
-	return false
-}
-
-// servePINPage serves the PIN entry HTML page.
-func (s *Server) servePINPage(w http.ResponseWriter, subdomain string, showError bool) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusUnauthorized)
-
-	errorHTML := ""
-	if showError {
-		errorHTML = `<p style="color:#ef4444;margin-bottom:16px;font-size:14px">Invalid PIN. Please try again.</p>`
-	}
-
-	fmt.Fprintf(w, `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PIN Required - WireRift</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh}
-.card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:40px;max-width:400px;width:90%%;text-align:center}
-.logo{font-size:24px;font-weight:700;margin-bottom:8px;color:#fff}
-.sub{color:#94a3b8;font-size:14px;margin-bottom:24px}
-%s
-form{display:flex;flex-direction:column;gap:12px}
-input[type=password]{background:#0f172a;border:1px solid #475569;border-radius:8px;padding:12px 16px;color:#e2e8f0;font-size:16px;text-align:center;letter-spacing:8px;outline:none}
-input[type=password]:focus{border-color:#6366f1}
-button{background:#6366f1;color:#fff;border:none;border-radius:8px;padding:12px;font-size:16px;font-weight:600;cursor:pointer}
-button:hover{background:#4f46e5}
-.hint{color:#64748b;font-size:12px;margin-top:16px}
-</style>
-</head>
-<body>
-<div class="card">
-<div class="logo">WireRift</div>
-<p class="sub">This tunnel is PIN protected</p>
-%s
-<form method="POST">
-<input type="password" name="pin" placeholder="Enter PIN" autocomplete="off" autofocus required maxlength="32">
-<button type="submit">Unlock</button>
-</form>
-<p class="hint">You can also pass the PIN via header: X-WireRift-PIN</p>
-</div>
-</body>
-</html>`, errorHTML, errorHTML)
-}
-
-// extractSubdomain extracts the subdomain from a host.
-func extractSubdomain(host, domain string) string {
-	// Remove port if present
-	for i := len(host) - 1; i >= 0; i-- {
-		if host[i] == ':' {
-			host = host[:i]
-			break
-		}
-	}
-
-	// Check if host ends with domain
-	suffix := "." + domain
-	if len(host) <= len(suffix) {
-		return ""
-	}
-	if host[len(host)-len(suffix):] != suffix {
-		return ""
-	}
-
-	return host[:len(host)-len(suffix)]
 }
 
 // StartTime returns when the server was started.

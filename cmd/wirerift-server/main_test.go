@@ -483,3 +483,65 @@ func TestRun_CustomHTTPS(t *testing.T) {
 		t.Fatal("timeout")
 	}
 }
+
+func TestRun_InvalidPortRange(t *testing.T) {
+	ln1, _ := net.Listen("tcp", "127.0.0.1:0")
+	ln2, _ := net.Listen("tcp", "127.0.0.1:0")
+	_, p1, _ := net.SplitHostPort(ln1.Addr().String())
+	_, p2, _ := net.SplitHostPort(ln2.Addr().String())
+	ln1.Close()
+	ln2.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- run(ctx, []string{
+			"-control", "127.0.0.1:" + p1,
+			"-http", "127.0.0.1:" + p2,
+			"-tcp-ports", "50000-invalid",
+			"-dashboard-port", "0",
+		})
+	}()
+
+	time.Sleep(500 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-errCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout")
+	}
+}
+
+func TestRun_ACMEEmailStaging(t *testing.T) {
+	ln1, _ := net.Listen("tcp", "127.0.0.1:0")
+	ln2, _ := net.Listen("tcp", "127.0.0.1:0")
+	_, p1, _ := net.SplitHostPort(ln1.Addr().String())
+	_, p2, _ := net.SplitHostPort(ln2.Addr().String())
+	ln1.Close()
+	ln2.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- run(ctx, []string{
+			"-control", "127.0.0.1:" + p1,
+			"-http", "127.0.0.1:" + p2,
+			"-dashboard-port", "0",
+			"-acme-email", "test@example.com",
+			"-acme-staging",
+		})
+	}()
+
+	time.Sleep(1 * time.Second)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Logf("run returned (expected): %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("timeout")
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 )
@@ -31,8 +32,16 @@ func SerializeRequest(r *http.Request) ([]byte, error) {
 	}
 
 	// Add forwarding headers
+	clientIP := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		clientIP = host
+	}
 	buf.WriteString("X-Forwarded-For: ")
-	buf.WriteString(r.RemoteAddr)
+	if existing := r.Header.Get("X-Forwarded-For"); existing != "" {
+		buf.WriteString(existing + ", " + clientIP)
+	} else {
+		buf.WriteString(clientIP)
+	}
 	buf.WriteString("\r\n")
 	buf.WriteString("X-Forwarded-Proto: ")
 	if r.TLS != nil {

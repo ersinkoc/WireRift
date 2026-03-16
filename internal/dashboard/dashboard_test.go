@@ -627,6 +627,59 @@ func TestServeIndex(t *testing.T) {
 	if !strings.Contains(body, "<!DOCTYPE html>") {
 		t.Error("Response should contain DOCTYPE html")
 	}
+
+	// Should have CSP nonce header
+	csp := rec.Header().Get("Content-Security-Policy")
+	if csp == "" {
+		t.Error("Expected Content-Security-Policy header")
+	}
+	if !strings.Contains(csp, "script-src 'nonce-") {
+		t.Errorf("CSP should contain nonce-based script-src, got: %s", csp)
+	}
+
+	// HTML should contain script tag with nonce attribute
+	if !strings.Contains(body, `<script nonce="`) {
+		t.Error("Script tag should have nonce attribute")
+	}
+}
+
+func TestServeIndex_NonceUniqueness(t *testing.T) {
+	d := New(Config{})
+
+	// Two requests should get different nonces
+	req1 := httptest.NewRequest("GET", "/", nil)
+	rec1 := httptest.NewRecorder()
+	d.serveIndex(rec1, req1)
+
+	req2 := httptest.NewRequest("GET", "/", nil)
+	rec2 := httptest.NewRecorder()
+	d.serveIndex(rec2, req2)
+
+	csp1 := rec1.Header().Get("Content-Security-Policy")
+	csp2 := rec2.Header().Get("Content-Security-Policy")
+
+	if csp1 == csp2 {
+		t.Error("CSP nonces should be different for each request")
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	d := New(Config{})
+	handler := d.Handler()
+
+	req := httptest.NewRequest("GET", "/api/stats", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Header().Get("X-Frame-Options") != "DENY" {
+		t.Error("Expected X-Frame-Options: DENY")
+	}
+	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Error("Expected X-Content-Type-Options: nosniff")
+	}
+	if rec.Header().Get("Referrer-Policy") != "strict-origin-when-cross-origin" {
+		t.Error("Expected Referrer-Policy header")
+	}
 }
 
 func TestHandleDomainsPostSuccess(t *testing.T) {

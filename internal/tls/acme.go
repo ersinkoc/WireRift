@@ -3,7 +3,7 @@
 package tls
 
 import (
-	"crypto"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -163,7 +162,7 @@ func (m *ACMEManager) Initialize() error {
 }
 
 // ObtainCertificate requests a certificate for the given domains.
-func (m *ACMEManager) ObtainCertificate(domains []string) (*CertificateBundle, error) {
+func (m *ACMEManager) ObtainCertificate(ctx context.Context, domains []string) (*CertificateBundle, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -181,7 +180,7 @@ func (m *ACMEManager) ObtainCertificate(domains []string) (*CertificateBundle, e
 	}
 
 	orderBody, _ := json.Marshal(orderPayload)
-	resp, err := m.signedPost(m.directory.NewOrder, orderBody)
+	resp, err := m.signedPost(ctx, m.directory.NewOrder, orderBody)
 	if err != nil {
 		return nil, fmt.Errorf("create order: %w", err)
 	}
@@ -194,18 +193,20 @@ func (m *ACMEManager) ObtainCertificate(domains []string) (*CertificateBundle, e
 
 	// 2. Process authorizations
 	for _, authzURL := range order.Authorizations {
-		if err := m.processAuthorization(authzURL); err != nil {
+		if err := m.processAuthorization(ctx, authzURL); err != nil {
 			return nil, fmt.Errorf("authorization: %w", err)
 		}
 	}
 
 	// 3. Wait for order to be ready
 	for i := 0; i < 30; i++ {
-		orderResp, err := m.signedPost(orderURL, nil)
+		orderResp, err := m.signedPost(ctx, orderURL, nil)
 		if err != nil {
 			return nil, err
 		}
-		json.Unmarshal(orderResp.body, &order)
+		if err := json.Unmarshal(orderResp.body, &order); err != nil {
+			return nil, fmt.Errorf("decode order: %w", err)
+		}
 
 		if order.Status == "ready" {
 			break
@@ -213,7 +214,11 @@ func (m *ACMEManager) ObtainCertificate(domains []string) (*CertificateBundle, e
 		if order.Status == "invalid" {
 			return nil, fmt.Errorf("%w: order status invalid", ErrACMEOrderFailed)
 		}
-		time.Sleep(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
 	}
 
 	if order.Status != "ready" {
@@ -234,20 +239,31 @@ func (m *ACMEManager) ObtainCertificate(domains []string) (*CertificateBundle, e
 		"csr": base64URLEncode(csr),
 	})
 
-	resp, err = m.signedPost(order.Finalize, finalizePayload)
+	resp, err = m.signedPost(ctx, order.Finalize, finalizePayload)
 	if err != nil {
 		return nil, fmt.Errorf("finalize: %w", err)
 	}
-	json.Unmarshal(resp.body, &order)
+	if err := json.Unmarshal(resp.body, &order); err != nil {
+		return nil, fmt.Errorf("decode finalize response: %w", err)
+	}
 
 	// 5. Wait for certificate
 	for i := 0; i < 30; i++ {
 		if order.Certificate != "" {
 			break
 		}
-		time.Sleep(2 * time.Second)
-		orderResp, _ := m.signedPost(orderURL, nil)
-		json.Unmarshal(orderResp.body, &order)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+		orderResp, err := m.signedPost(ctx, orderURL, nil)
+		if err != nil {
+			continue
+		}
+		if err := json.Unmarshal(orderResp.body, &order); err != nil {
+			continue
+		}
 	}
 
 	if order.Certificate == "" {
@@ -255,7 +271,7 @@ func (m *ACMEManager) ObtainCertificate(domains []string) (*CertificateBundle, e
 	}
 
 	// 6. Download certificate
-	certResp, err := m.signedPost(order.Certificate, nil)
+	certResp, err := m.signedPost(ctx, order.Certificate, nil)
 	if err != nil {
 		return nil, fmt.Errorf("download certificate: %w", err)
 	}
@@ -303,8 +319,8 @@ func (b *CertificateBundle) NeedsRenewal() bool {
 }
 
 // processAuthorization handles a single domain authorization.
-func (m *ACMEManager) processAuthorization(authzURL string) error {
-	resp, err := m.signedPost(authzURL, nil)
+func (m *ACMEManager) processAuthorization(ctx context.Context, authzURL string) error {
+	resp, err := m.signedPost(ctx, authzURL, nil)
 	if err != nil {
 		return err
 	}
@@ -344,22 +360,28 @@ func (m *ACMEManager) processAuthorization(authzURL string) error {
 	)
 
 	// Tell ACME server we're ready
-	_, err = m.signedPost(challenge.URL, []byte("{}"))
+	_, err = m.signedPost(ctx, challenge.URL, []byte("{}"))
 	if err != nil {
 		return fmt.Errorf("respond to challenge: %w", err)
 	}
 
 	// Poll until valid or invalid
 	for i := 0; i < 30; i++ {
-		time.Sleep(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
 
-		pollResp, err := m.signedPost(authzURL, nil)
+		pollResp, err := m.signedPost(ctx, authzURL, nil)
 		if err != nil {
 			continue
 		}
 
 		var pollAuthz acmeAuthorization
-		json.Unmarshal(pollResp.body, &pollAuthz)
+		if err := json.Unmarshal(pollResp.body, &pollAuthz); err != nil {
+			continue
+		}
 
 		if pollAuthz.Status == "valid" {
 			m.logger.Info("challenge validated", "domain", authz.Identifier.Value)
@@ -399,9 +421,9 @@ type acmeResponse struct {
 	location string
 }
 
-func (m *ACMEManager) signedPost(url string, payload []byte) (*acmeResponse, error) {
+func (m *ACMEManager) signedPost(ctx context.Context, url string, payload []byte) (*acmeResponse, error) {
 	// Get nonce
-	nonce, err := m.getNonce()
+	nonce, err := m.getNonce(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -452,7 +474,7 @@ func (m *ACMEManager) signedPost(url string, payload []byte) (*acmeResponse, err
 	jwsJSON, _ := json.Marshal(jws)
 
 	// POST
-	req, _ := http.NewRequest("POST", url, strings.NewReader(string(jwsJSON)))
+	req, _ := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(jwsJSON)))
 	req.Header.Set("Content-Type", "application/jose+json")
 
 	resp, err := m.httpClient.Do(req)
@@ -461,7 +483,10 @@ func (m *ACMEManager) signedPost(url string, payload []byte) (*acmeResponse, err
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
 
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("ACME error %d: %s", resp.StatusCode, string(body))
@@ -473,8 +498,12 @@ func (m *ACMEManager) signedPost(url string, payload []byte) (*acmeResponse, err
 	}, nil
 }
 
-func (m *ACMEManager) getNonce() (string, error) {
-	resp, err := m.httpClient.Head(m.directory.NewNonce)
+func (m *ACMEManager) getNonce(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, "HEAD", m.directory.NewNonce, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := m.httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -483,13 +512,14 @@ func (m *ACMEManager) getNonce() (string, error) {
 }
 
 func (m *ACMEManager) registerAccount() error {
+	ctx := context.Background()
 	payload := map[string]interface{}{
 		"termsOfServiceAgreed": true,
 		"contact":             []string{"mailto:" + m.email},
 	}
 	body, _ := json.Marshal(payload)
 
-	resp, err := m.signedPost(m.directory.NewAccount, body)
+	resp, err := m.signedPost(ctx, m.directory.NewAccount, body)
 	if err != nil {
 		return err
 	}
@@ -577,7 +607,9 @@ func (m *ACMEManager) saveCertBundle(domain string, bundle *CertificateBundle) e
 		"expires_at": bundle.ExpiresAt.Format(time.RFC3339),
 	}
 	metaJSON, _ := json.MarshalIndent(meta, "", "  ")
-	os.WriteFile(filepath.Join(m.certDir, domain+".json"), metaJSON, 0600)
+	if err := os.WriteFile(filepath.Join(m.certDir, domain+".json"), metaJSON, 0600); err != nil {
+		m.logger.Warn("failed to save certificate metadata", "domain", domain, "error", err)
+	}
 
 	return nil
 }
@@ -645,17 +677,27 @@ func padTo32(b []byte) []byte {
 	return padded
 }
 
-// Ensure ACMEManager implements the crypto.Signer check at compile time
-var _ crypto.PublicKey = (*ecdsa.PublicKey)(nil)
-
 // ─── Auto-Renewal ───────────────────────────────────────
 
 // StartAutoRenewal starts a background goroutine that checks certificate
 // expiry and renews when needed (30 days before expiry).
 func (m *ACMEManager) StartAutoRenewal(domains []string, getCert func(string) *CertificateBundle, setCert func(string, *CertificateBundle), done <-chan struct{}) {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				m.logger.Error("panic in auto-renewal", "error", r)
+			}
+		}()
+
 		ticker := time.NewTicker(12 * time.Hour)
 		defer ticker.Stop()
+
+		// Derive a cancellable context from the done channel
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			<-done
+			cancel()
+		}()
 
 		for {
 			select {
@@ -663,10 +705,17 @@ func (m *ACMEManager) StartAutoRenewal(domains []string, getCert func(string) *C
 				return
 			case <-ticker.C:
 				for _, domain := range domains {
+					// Check if we should stop before starting expensive renewal
+					select {
+					case <-done:
+						return
+					default:
+					}
+
 					bundle := getCert(domain)
 					if bundle == nil || bundle.NeedsRenewal() {
 						m.logger.Info("renewing certificate", "domain", domain)
-						newBundle, err := m.ObtainCertificate([]string{domain})
+						newBundle, err := m.ObtainCertificate(ctx, []string{domain})
 						if err != nil {
 							m.logger.Error("renewal failed", "domain", domain, "error", err)
 							continue
@@ -693,8 +742,3 @@ func EstimateExpiry(certPEM []byte) (time.Time, error) {
 	return cert.NotAfter, nil
 }
 
-// Needed for big.Int padding
-func init() {
-	// Verify P-256 curve parameters are available
-	_ = new(big.Int)
-}

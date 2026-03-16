@@ -49,6 +49,11 @@ func (wr *WebhookRelay) Relay(method, path string, headers http.Header, body []b
 		wg.Add(1)
 		go func(idx int, endpoint string) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					results[idx] = WebhookResult{Endpoint: endpoint, Error: fmt.Sprintf("panic: %v", r)}
+				}
+			}()
 
 			url := fmt.Sprintf("http://%s%s", endpoint, path)
 			req, err := http.NewRequest(method, url, bytes.NewReader(body))

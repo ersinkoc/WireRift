@@ -27,6 +27,7 @@ type CustomDomain struct {
 	UpdatedAt   time.Time
 	Certificate []byte // TLS certificate
 	PrivateKey  []byte // TLS private key
+	VerifyCode  string // stored verification code for DNS TXT record
 }
 
 // DNSRecord represents a DNS record for verification.
@@ -73,11 +74,12 @@ func (m *DomainManager) AddDomain(domain, accountID string) (*CustomDomain, erro
 	}
 
 	custom := &CustomDomain{
-		Domain:    domain,
-		AccountID: accountID,
-		Verified:  false,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		Domain:     domain,
+		AccountID:  accountID,
+		Verified:   false,
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+		VerifyCode: generateVerificationCode(domain),
 	}
 
 	m.domains.Store(domain, custom)
@@ -144,6 +146,14 @@ func (m *DomainManager) SetTunnel(domain, tunnelID string) error {
 
 // GetDNSRecords returns the DNS records needed for verification.
 func (m *DomainManager) GetDNSRecords(domain string) ([]DNSRecord, error) {
+	// Use stored verify code if domain exists, fallback to random for unknown domains
+	verifyCode := generateVerificationCode(domain)
+	if v, ok := m.domains.Load(domain); ok {
+		if cd := v.(*CustomDomain); cd.VerifyCode != "" {
+			verifyCode = cd.VerifyCode
+		}
+	}
+
 	records := []DNSRecord{
 		{
 			Type:  "CNAME",
@@ -154,7 +164,7 @@ func (m *DomainManager) GetDNSRecords(domain string) ([]DNSRecord, error) {
 		{
 			Type:  "TXT",
 			Name:  "_wirerift." + domain,
-			Value: "wirerift-verification=" + generateVerificationCode(domain),
+			Value: "wirerift-verification=" + verifyCode,
 			TTL:   300,
 		},
 	}
@@ -207,9 +217,3 @@ func generateVerificationCode(domain string) string {
 	return "wrv_" + domain[:min(8, len(domain))] + "_" + hex.EncodeToString(b[:8])
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

@@ -1,7 +1,9 @@
 package dashboard
 
 import (
+	"crypto/rand"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -69,7 +71,17 @@ func (d *Dashboard) Handler() http.Handler {
 	mux.Handle("/static/", http.StripPrefix("/static/", fileServer))
 	mux.HandleFunc("/", d.serveIndex)
 
-	return mux
+	return d.securityHeaders(mux)
+}
+
+// securityHeaders wraps a handler with standard security headers.
+func (d *Dashboard) securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // authMiddleware checks for valid authentication.
@@ -78,14 +90,15 @@ func (d *Dashboard) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		// Check for Bearer token
 		auth := r.Header.Get("Authorization")
 		if auth == "" {
-			// Check for session cookie
-			cookie, err := r.Cookie("wirerift_session")
-			if err == nil && cookie.Value != "" {
-				// Validate session token
-				_, _, err := d.authManager.ValidateToken(cookie.Value)
-				if err == nil {
-					next(w, r)
-					return
+			// Session cookies only allowed for safe (GET) requests to prevent CSRF
+			if r.Method == http.MethodGet {
+				cookie, err := r.Cookie("wirerift_session")
+				if err == nil && cookie.Value != "" {
+					_, _, err := d.authManager.ValidateToken(cookie.Value)
+					if err == nil {
+						next(w, r)
+						return
+					}
 				}
 			}
 			d.jsonError(w, "Unauthorized", http.StatusUnauthorized)
@@ -157,6 +170,8 @@ func (d *Dashboard) handleDomains(w http.ResponseWriter, r *http.Request) {
 		d.jsonResponse(w, domains)
 
 	case http.MethodPost:
+		// Limit request body to 1 MB to prevent abuse
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		var req struct {
 			Domain    string `json:"domain"`
 			AccountID string `json:"account_id"`
@@ -253,6 +268,9 @@ func (d *Dashboard) handleRequests(w http.ResponseWriter, r *http.Request) {
 	if l := r.URL.Query().Get("limit"); l != "" {
 		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
 			limit = parsed
+			if limit > 500 {
+				limit = 500
+			}
 		}
 	}
 
@@ -283,23 +301,35 @@ func (d *Dashboard) handleRequestActions(w http.ResponseWriter, r *http.Request)
 	d.jsonResponse(w, result)
 }
 
-// serveIndex serves the main index.html
-func (d *Dashboard) serveIndex(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(indexHTML))
+// generateNonce creates a cryptographically random nonce for CSP.
+func generateNonce() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return base64.StdEncoding.EncodeToString(b)
 }
 
-// jsonResponse writes a JSON response
+// serveIndex serves the main index.html with CSP nonce for inline script.
+func (d *Dashboard) serveIndex(w http.ResponseWriter, r *http.Request) {
+	nonce := generateNonce()
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy",
+		fmt.Sprintf("default-src 'self'; script-src 'nonce-%s'; style-src 'unsafe-inline'; connect-src 'self'", nonce))
+	// Replace the script tag placeholder with the nonce
+	html := strings.Replace(indexHTML, "<script>", fmt.Sprintf(`<script nonce="%s">`, nonce), 1)
+	w.Write([]byte(html))
+}
+
+// jsonResponse writes a JSON response.
 func (d *Dashboard) jsonResponse(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(data) // error is client disconnect — nothing to do
 }
 
-// jsonError writes a JSON error response
+// jsonError writes a JSON error response.
 func (d *Dashboard) jsonError(w http.ResponseWriter, message string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]string{"error": message})
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
 // Addr returns the dashboard address.

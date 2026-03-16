@@ -1,6 +1,8 @@
 # Build stage
 FROM golang:1.23-alpine AS builder
 
+RUN apk add --no-cache git
+
 WORKDIR /app
 
 COPY go.mod ./
@@ -11,12 +13,24 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /wirerift-server ./cmd/wirerift-server
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /wirerift ./cmd/wirerift
 
-# Runtime stage
-FROM scratch
+# Runtime stage — minimal image with CA certs for ACME/TLS
+FROM alpine:3.20
 
-COPY --from=builder /wirerift-server /wirerift-server
-COPY --from=builder /wirerift /wirerift
+# Install CA certificates (required for Let's Encrypt ACME)
+RUN apk add --no-cache ca-certificates && \
+    adduser -D -u 1000 wirerift
+
+COPY --from=builder /wirerift-server /usr/local/bin/wirerift-server
+COPY --from=builder /wirerift /usr/local/bin/wirerift
+
+# Create cert storage directory
+RUN mkdir -p /data/certs && chown wirerift:wirerift /data/certs
+
+USER wirerift
 
 EXPOSE 80 443 4040 4443
 
-ENTRYPOINT ["/wirerift-server"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -q --spider http://localhost:80/healthz || exit 1
+
+ENTRYPOINT ["wirerift-server", "-cert-dir", "/data/certs"]

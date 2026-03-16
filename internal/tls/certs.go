@@ -116,7 +116,8 @@ func (m *Manager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, 
 
 	// Try ACME (Let's Encrypt) first
 	if m.acme != nil {
-		bundle, err := m.acme.ObtainCertificate([]string{host})
+		ctx := hello.Context()
+		bundle, err := m.acme.ObtainCertificate(ctx, []string{host})
 		if err == nil {
 			tlsCert, err := bundle.TLSCertificate()
 			if err == nil {
@@ -235,25 +236,37 @@ func (m *Manager) saveCertificate(host string, certDER, keyDER []byte) error {
 	keyPath := filepath.Join(m.config.CertDir, host+".key")
 
 	// Write certificate (0600 to protect against unauthorized reads)
-	certFile, err := os.OpenFile(certPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		return err
-	}
-	defer certFile.Close()
-	if err := pem.Encode(certFile, &pem.Block{Type: "CERTIFICATE", Bytes: certDER}); err != nil {
-		return fmt.Errorf("encode certificate: %w", err)
+	if err := writeFileAtomic(certPath, func(f *os.File) error {
+		return pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	}); err != nil {
+		return fmt.Errorf("write certificate: %w", err)
 	}
 
 	// Write key
-	keyFile, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err := writeFileAtomic(keyPath, func(f *os.File) error {
+		return pem.Encode(f, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	}); err != nil {
+		return fmt.Errorf("write private key: %w", err)
+	}
+
+	return nil
+}
+
+// writeFileAtomic opens a file for writing, calls the writer function,
+// then checks the Close error to ensure data is flushed to disk.
+func writeFileAtomic(path string, writer func(*os.File) error) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}
-	defer keyFile.Close()
-	if err := pem.Encode(keyFile, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}); err != nil {
-		return fmt.Errorf("encode private key: %w", err)
+
+	writeErr := writer(f)
+	closeErr := f.Close()
+
+	if writeErr != nil {
+		return writeErr
 	}
-	return nil
+	return closeErr
 }
 
 // TLSConfig returns a TLS configuration for the server.

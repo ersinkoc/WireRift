@@ -1,20 +1,31 @@
-version: '3.8'
-
 services:
   wirerift-server:
     build: .
     image: wirerift-server:latest
     container_name: wirerift-server
     ports:
-      - "4443:4443"   # Control plane
-      - "80:80"         # HTTP edge
-      - "443:443"       # HTTPS edge
-      - "4040:4040"     # Dashboard
+      - "4443:4443"       # Control plane
+      - "80:80"           # HTTP edge
+      - "443:443"         # HTTPS edge
+      - "4040:4040"       # Dashboard
+      - "20000-20099:20000-20099"  # TCP tunnel port range (subset)
     environment:
       - WIRERIFT_DOMAIN=localtunnel.dev
+    command:
+      - "-domain"
+      - "localtunnel.dev"
+      - "-tcp-ports"
+      - "20000-20099"
+      - "-auto-cert"
     volumes:
-      - certs:/app/certs
+      - certs:/data/certs
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # Example web service to tunnel
   webapp:

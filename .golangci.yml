@@ -19,6 +19,10 @@ linters:
     - unconvert
     - prealloc
     - revive
+    - gosec
+    - bodyclose
+    - noctx
+    - exportloopref
 
 linters-settings:
   gocyclo:
@@ -28,6 +32,10 @@ linters-settings:
     min-occurrences: 3
   dupl:
     threshold: 100
+  gosec:
+    excludes:
+      - G104  # Unhandled errors on deferred Close — acceptable pattern
+      - G114  # http.ListenAndServe — we use custom servers with timeouts
 
 issues:
   exclude-rules:
@@ -35,3 +43,9 @@ issues:
       linters:
         - dupl
         - goconst
+        - gosec
+        - errcheck
+    - path: test/
+      linters:
+        - gosec
+        - errcheck

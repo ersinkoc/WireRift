@@ -77,6 +77,9 @@ type Client struct {
 	// Tunnels
 	tunnels sync.Map // map[string]*Tunnel
 
+	// HTTP client for proxying (shared for connection reuse)
+	httpClient *http.Client
+
 	// Lifecycle
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -108,6 +111,14 @@ func New(config Config, logger *slog.Logger) *Client {
 		logger: logger,
 		ctx:    ctx,
 		cancel: cancel,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		},
 	}
 }
 
@@ -117,18 +128,19 @@ func (c *Client) Connect() error {
 		return err
 	}
 
-	// Start stream handler
+	// Start stream handler (pass mux explicitly to avoid race on reconnect)
+	currentMux := c.mux
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
-		c.handleStreams()
+		c.handleStreams(currentMux)
 	}()
 
-	// Start heartbeat
+	// Start heartbeat (pass mux explicitly to avoid race on reconnect)
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
-		c.heartbeatLoop()
+		c.heartbeatLoop(currentMux)
 	}()
 
 	// Start reconnect loop if enabled
@@ -166,10 +178,15 @@ func (c *Client) connect() error {
 
 	// Create mux and start run loop FIRST so it dispatches control frames
 	c.mux = mux.New(conn, mux.DefaultConfig())
-	go c.mux.Run()
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		c.mux.Run()
+	}()
 
 	// Authenticate
 	if err := c.authenticate(); err != nil {
+		c.mux.Close() // Close mux first to stop mux.Run() goroutine
 		conn.Close()
 		return err
 	}
@@ -369,8 +386,9 @@ func (c *Client) FrameReader() *proto.FrameReader {
 	return c.mux.GetFrameReader()
 }
 
-// heartbeatLoop sends periodic heartbeats.
-func (c *Client) heartbeatLoop() {
+// heartbeatLoop sends periodic heartbeats using the given mux.
+// The mux is captured at start to avoid racing with reconnectLoop replacing c.mux.
+func (c *Client) heartbeatLoop(m *mux.Mux) {
 	ticker := time.NewTicker(c.config.HeartbeatInterval)
 	defer ticker.Stop()
 
@@ -390,10 +408,10 @@ func (c *Client) heartbeatLoop() {
 				Payload:  proto.HeartbeatPayload(),
 			}
 
-			if err := c.mux.GetFrameWriter().Write(frame); err != nil {
+			if err := m.GetFrameWriter().Write(frame); err != nil {
 				c.logger.Warn("heartbeat failed", "error", err)
 			}
-		case <-c.mux.Done():
+		case <-m.Done():
 			c.connected.Store(false)
 			c.logger.Warn("connection lost")
 			return
@@ -415,12 +433,24 @@ func (c *Client) reconnectLoop() {
 			}
 
 			c.connected.Store(false)
+
+			// Ensure old mux and connection are fully closed before reconnecting.
+			// This allows the old mux.Run() goroutine to exit cleanly.
+			if c.mux != nil {
+				c.mux.Close()
+			}
+			if c.conn != nil {
+				c.conn.Close()
+			}
+
 			c.logger.Info("reconnecting", "interval", interval)
 
+			timer := time.NewTimer(interval)
 			select {
 			case <-c.ctx.Done():
+				timer.Stop()
 				return
-			case <-time.After(interval):
+			case <-timer.C:
 			}
 
 			if err := c.connect(); err != nil {
@@ -435,11 +465,12 @@ func (c *Client) reconnectLoop() {
 			// Re-create tunnels from previous session
 			c.recreateTunnels()
 
-			// Restart stream handler for new connection
+			// Restart stream handler for new connection (capture current mux)
+			reconnectedMux := c.mux
 			c.wg.Add(1)
 			go func() {
 				defer c.wg.Done()
-				c.handleStreams()
+				c.handleStreams(reconnectedMux)
 			}()
 
 			interval = c.config.ReconnectInterval
@@ -525,14 +556,23 @@ func (t *Tunnel) Close() error {
 	return t.client.CloseTunnel(t.ID)
 }
 
-// handleStreams accepts incoming streams from the server and dispatches them.
-func (c *Client) handleStreams() {
+// handleStreams accepts incoming streams from the given mux and dispatches them.
+// The mux is passed explicitly to avoid a race where reconnectLoop replaces c.mux
+// while a previous handleStreams goroutine is still running on the old mux.
+func (c *Client) handleStreams(m *mux.Mux) {
 	for {
-		stream, err := c.mux.AcceptStream()
+		stream, err := m.AcceptStream()
 		if err != nil {
 			return
 		}
-		go c.handleStream(stream)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					c.logger.Error("panic in stream handler", "error", r)
+				}
+			}()
+			c.handleStream(stream)
+		}()
 	}
 }
 
@@ -572,8 +612,7 @@ func (c *Client) handleHTTPStream(stream *mux.Stream) {
 	req.URL.Host = tunnel.LocalAddr
 	req.RequestURI = ""
 
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	resp, err := httpClient.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		// Send 502 response
 		errResp := "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"

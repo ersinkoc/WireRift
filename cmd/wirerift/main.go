@@ -359,7 +359,7 @@ func doStart(parentCtx context.Context, args []string) error {
 		fmt.Fprintf(os.Stderr, "Start tunnels from config file.\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		fs.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nDefault config file: wirerift.yaml\n")
+		fmt.Fprintf(os.Stderr, "\nDefault config file: wirerift.yaml (also supports .json)\n")
 	}
 
 	if err := fs.Parse(args[2:]); err != nil {
@@ -369,6 +369,11 @@ func doStart(parentCtx context.Context, args []string) error {
 	configFile := "wirerift.yaml"
 	if len(fs.Args()) > 0 {
 		configFile = fs.Args()[0]
+	} else if _, err := os.Stat(configFile); os.IsNotExist(err) {
+		// Fallback to JSON if YAML not found
+		if _, err := os.Stat("wirerift.json"); err == nil {
+			configFile = "wirerift.json"
+		}
 	}
 
 	cfg, err := loadConfig(configFile)
@@ -457,21 +462,21 @@ func doStart(parentCtx context.Context, args []string) error {
 
 // TunnelConfig represents a tunnel in the config file
 type TunnelConfig struct {
-	Type      string `yaml:"type"`
-	LocalPort int    `yaml:"local_port"`
-	Subdomain string `yaml:"subdomain"`
-	Whitelist string `yaml:"whitelist"`
-	PIN       string `yaml:"pin"`
-	Auth      string `yaml:"auth"`
-	Inspect   bool   `yaml:"inspect"`
-	Headers   string `yaml:"headers"`
+	Type      string `json:"type" yaml:"type"`
+	LocalPort int    `json:"local_port" yaml:"local_port"`
+	Subdomain string `json:"subdomain,omitempty" yaml:"subdomain"`
+	Whitelist string `json:"whitelist,omitempty" yaml:"whitelist"`
+	PIN       string `json:"pin,omitempty" yaml:"pin"`
+	Auth      string `json:"auth,omitempty" yaml:"auth"`
+	Inspect   bool   `json:"inspect,omitempty" yaml:"inspect"`
+	Headers   string `json:"headers,omitempty" yaml:"headers"`
 }
 
 // ConfigFile represents the config file structure
 type ConfigFile struct {
-	Server  string         `yaml:"server"`
-	Token   string         `yaml:"token"`
-	Tunnels []TunnelConfig `yaml:"tunnels"`
+	Server  string         `json:"server" yaml:"server"`
+	Token   string         `json:"token" yaml:"token"`
+	Tunnels []TunnelConfig `json:"tunnels" yaml:"tunnels"`
 }
 
 func loadConfig(path string) (*ConfigFile, error) {
@@ -485,7 +490,32 @@ func loadConfig(path string) (*ConfigFile, error) {
 		Token:  getEnv("WIRERIFT_TOKEN", ""),
 	}
 
-	// Simple YAML parsing (basic implementation)
+	// JSON files are parsed with stdlib encoder (reliable)
+	if strings.HasSuffix(path, ".json") {
+		if err := json.Unmarshal(data, cfg); err != nil {
+			return nil, fmt.Errorf("parse JSON config: %w", err)
+		}
+		// Apply env overrides
+		if cfg.Server == "" {
+			cfg.Server = getEnv("WIRERIFT_SERVER", "localhost:4443")
+		}
+		if cfg.Token == "" {
+			cfg.Token = getEnv("WIRERIFT_TOKEN", "")
+		}
+		return cfg, nil
+	}
+
+	// YAML files are parsed with a simple line-based parser.
+	// Supports flat key:value pairs and a single "tunnels:" list.
+	// For complex configs, use JSON format instead.
+	return loadYAMLConfig(data, cfg)
+}
+
+// loadYAMLConfig parses a simple YAML config file.
+// Limitations: flat key:value only, single-level "tunnels:" list,
+// no nested objects, no multi-line values, no anchors/aliases.
+// For full YAML support, use wirerift.json instead.
+func loadYAMLConfig(data []byte, cfg *ConfigFile) (*ConfigFile, error) {
 	lines := strings.Split(string(data), "\n")
 	currentSection := ""
 	tunnelIdx := -1
@@ -615,8 +645,8 @@ func doServe(parentCtx context.Context, args []string) error {
 	}
 	localPort := listener.Addr().(*net.TCPAddr).Port
 
-	fileServer := http.FileServer(http.Dir(dir))
-	go http.Serve(listener, fileServer)
+	fileSrv := &http.Server{Handler: http.FileServer(http.Dir(dir))}
+	go fileSrv.Serve(listener)
 
 	opts := parseCommonOptions()
 	if *server != "" {
@@ -684,7 +714,9 @@ func doServe(parentCtx context.Context, args []string) error {
 	fmt.Printf("Serving %s at %s\n", dir, tunnel.PublicURL)
 
 	<-ctx.Done()
-	listener.Close()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	fileSrv.Shutdown(shutdownCtx)
 	c.Close()
 	return nil
 }
@@ -723,7 +755,8 @@ func doList(args []string) error {
 		req.Header.Set("Authorization", "Bearer "+opts.token)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to connect to server: %v", err)
 	}

@@ -116,8 +116,16 @@ Environment Variables:
 	// Create auth manager
 	authMgr := auth.NewManager()
 	devToken := authMgr.DevToken()
-	maskedToken := devToken[:8] + "..." + devToken[len(devToken)-4:]
-	logger.Info("development token generated", "token_prefix", maskedToken)
+
+	// Print token prominently so it's easy to copy
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "========================================")
+	fmt.Fprintln(os.Stderr, "  Development Token (use with client):")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintf(os.Stderr, "  %s\n", devToken)
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintf(os.Stderr, "  Export: export WIRERIFT_TOKEN=%s\n", devToken)
+	fmt.Fprintln(os.Stderr, "========================================")
 
 	// Create domain manager
 	domainMgr := config.NewDomainManager(*domain)
@@ -196,11 +204,20 @@ Environment Variables:
 
 	// Start dashboard
 	dashServer := &http.Server{
-		Addr:    fmt.Sprintf(":%d", *dashboardAddr),
-		Handler: dash.Handler(),
+		Addr:              fmt.Sprintf(":%d", *dashboardAddr),
+		Handler:           dash.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("dashboard panic", "error", r)
+			}
+		}()
 		logger.Info("dashboard started", "addr", dashServer.Addr)
 		if err := dashServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("dashboard error", "error", err)

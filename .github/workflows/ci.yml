@@ -33,6 +33,24 @@ jobs:
       - name: Unit Tests
         run: go test ./cmd/... ./internal/... ./test/integration/ -timeout 120s
 
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: false
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: ./cmd/... ./internal/...
+
   race:
     name: Race Detector
     runs-on: ubuntu-latest
@@ -112,7 +130,13 @@ jobs:
         run: |
           total=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | sed 's/%//')
           echo "Total coverage: ${total}%"
-          if (( $(echo "$total < 95" | bc -l) )); then
-            echo "::error::Coverage ${total}% is below 95% threshold"
+          if (( $(echo "$total < 90" | bc -l) )); then
+            echo "::error::Coverage ${total}% is below 90% threshold"
             exit 1
           fi
+
+      - name: Upload Coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out

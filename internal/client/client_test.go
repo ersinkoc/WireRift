@@ -986,7 +986,7 @@ func TestHeartbeatLoopWriteError(t *testing.T) {
 		client.mux.Close()
 	}()
 
-	client.heartbeatLoop()
+	client.heartbeatLoop(client.mux)
 	client.conn.Close()
 }
 
@@ -999,7 +999,7 @@ func TestHeartbeatLoopMuxDone(t *testing.T) {
 		client.mux.Close()
 	}()
 
-	client.heartbeatLoop()
+	client.heartbeatLoop(client.mux)
 
 	// After mux done, connected should be false
 	if client.connected.Load() {
@@ -1022,7 +1022,7 @@ func TestHeartbeatLoopNotConnected(t *testing.T) {
 	// Drain server side
 	go io.Copy(io.Discard, serverConn)
 
-	client.heartbeatLoop()
+	client.heartbeatLoop(client.mux)
 	serverConn.Close()
 	client.conn.Close()
 }
@@ -1363,7 +1363,7 @@ func TestHandleStreamHTTP(t *testing.T) {
 	c.tunnels.Store("tun-http", tun)
 
 	// Start handling streams
-	go c.handleStreams()
+	go c.handleStreams(c.mux)
 
 	// Open a stream from server side and send STREAM_OPEN
 	stream, err := serverMux.OpenStream()
@@ -1440,7 +1440,7 @@ func TestHandleStreamTCP(t *testing.T) {
 	c.tunnels.Store("tun-tcp", tun)
 
 	// Start handling streams
-	go c.handleStreams()
+	go c.handleStreams(c.mux)
 
 	// Open a stream from server side and send STREAM_OPEN
 	stream, err := serverMux.OpenStream()
@@ -1487,7 +1487,7 @@ func TestHandleStreamUnknownProtocol(t *testing.T) {
 	c.connected.Store(true)
 
 	// Start handling streams
-	go c.handleStreams()
+	go c.handleStreams(c.mux)
 
 	// Open a stream with unknown protocol
 	stream, err := serverMux.OpenStream()
@@ -1729,7 +1729,7 @@ func TestHandleStreamsExitOnMuxClose(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		c.handleStreams()
+		c.handleStreams(c.mux)
 		close(done)
 	}()
 

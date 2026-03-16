@@ -1,11 +1,21 @@
 package tls
 
 import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestNewManager(t *testing.T) {
@@ -763,3 +773,385 @@ func TestSaveCertificateKeyWriteError(t *testing.T) {
 		t.Error("Cert file should have been created before key error")
 	}
 }
+
+func TestNewManager_Defaults(t *testing.T) {
+	dir := t.TempDir()
+
+	// Empty domain should default to "localhost"
+	m, err := NewManager(Config{CertDir: dir})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if m.config.Domain != "localhost" {
+		t.Errorf("Domain = %q, want localhost", m.config.Domain)
+	}
+	if m.IsACMEEnabled() {
+		t.Error("ACME should not be enabled without email")
+	}
+}
+
+func TestGetCertificate_NilServerName(t *testing.T) {
+	dir := t.TempDir()
+	m, err := NewManager(Config{CertDir: dir, AutoCert: true})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	// Empty ServerName should return error
+	_, err = m.GetCertificate(&tls.ClientHelloInfo{ServerName: ""})
+	if err != ErrDomainNotConfigured {
+		t.Errorf("Expected ErrDomainNotConfigured, got %v", err)
+	}
+}
+
+func TestGetCertificate_AutoCertDisabled(t *testing.T) {
+	dir := t.TempDir()
+	m, err := NewManager(Config{CertDir: dir, AutoCert: false})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	// Without AutoCert, unknown host should return ErrCertificateNotFound
+	_, err = m.GetCertificate(&tls.ClientHelloInfo{ServerName: "unknown.example.com"})
+	if err != ErrCertificateNotFound {
+		t.Errorf("Expected ErrCertificateNotFound, got %v", err)
+	}
+}
+
+func TestGetCertificate_CachesResult(t *testing.T) {
+	dir := t.TempDir()
+	m, err := NewManager(Config{
+		Domain:   "test.local",
+		CertDir:  dir,
+		AutoCert: true,
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	hello := &tls.ClientHelloInfo{ServerName: "myapp.test.local"}
+
+	// First call generates cert
+	cert1, err := m.GetCertificate(hello)
+	if err != nil {
+		t.Fatalf("GetCertificate: %v", err)
+	}
+
+	// Second call should return cached cert
+	cert2, err := m.GetCertificate(hello)
+	if err != nil {
+		t.Fatalf("GetCertificate (cached): %v", err)
+	}
+
+	if cert1 != cert2 {
+		t.Error("Second call should return cached certificate")
+	}
+}
+
+func TestGetCertificate_LoadsFromDisk(t *testing.T) {
+	dir := t.TempDir()
+	m, err := NewManager(Config{
+		Domain:   "test.local",
+		CertDir:  dir,
+		AutoCert: true,
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	host := "disktest.test.local"
+	hello := &tls.ClientHelloInfo{ServerName: host}
+
+	// Generate cert (saves to disk)
+	_, err = m.GetCertificate(hello)
+	if err != nil {
+		t.Fatalf("GetCertificate: %v", err)
+	}
+
+	// Verify files on disk
+	certPath := filepath.Join(dir, host+".crt")
+	keyPath := filepath.Join(dir, host+".key")
+	if _, err := os.Stat(certPath); os.IsNotExist(err) {
+		t.Error("Certificate file not saved to disk")
+	}
+	if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+		t.Error("Key file not saved to disk")
+	}
+
+	// Create a new manager (empty cache) and verify it loads from disk
+	m2, err := NewManager(Config{
+		Domain:   "test.local",
+		CertDir:  dir,
+		AutoCert: true,
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	cert, err := m2.GetCertificate(hello)
+	if err != nil {
+		t.Fatalf("GetCertificate from disk: %v", err)
+	}
+	if cert == nil {
+		t.Fatal("Expected certificate loaded from disk")
+	}
+
+	// Parse the leaf cert to verify it's for our host
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+	if err := leaf.VerifyHostname(host); err != nil {
+		t.Errorf("Certificate should be valid for %s: %v", host, err)
+	}
+}
+
+func TestACMEChallengeHandler_NoACME(t *testing.T) {
+	dir := t.TempDir()
+	m, err := NewManager(Config{CertDir: dir})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	handler := m.ACMEChallengeHandler()
+	if handler == nil {
+		t.Fatal("ACMEChallengeHandler should return non-nil handler even without ACME")
+	}
+}
+
+func TestTLSConfig_Settings(t *testing.T) {
+	dir := t.TempDir()
+	m, err := NewManager(Config{
+		Domain:  "example.com",
+		CertDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	tlsCfg := m.TLSConfig()
+	if tlsCfg.MinVersion != tls.VersionTLS12 {
+		t.Errorf("MinVersion = %d, want TLS 1.2", tlsCfg.MinVersion)
+	}
+	if tlsCfg.GetCertificate == nil {
+		t.Error("GetCertificate callback should be set")
+	}
+	if len(tlsCfg.CurvePreferences) == 0 {
+		t.Error("CurvePreferences should not be empty")
+	}
+	if len(tlsCfg.CipherSuites) == 0 {
+		t.Error("CipherSuites should not be empty")
+	}
+}
+
+func TestGetCertificate_ACMEPath(t *testing.T) {
+	// Create a mock ACME manager that can issue certs
+	mockSrv := mockACMEServerForCerts(t)
+	defer mockSrv.Close()
+
+	dir := t.TempDir()
+	mgr, err := NewACMEManager("test@example.com", dir, true, nil)
+	if err != nil {
+		t.Fatalf("NewACMEManager: %v", err)
+	}
+
+	// Wire up to mock
+	resp, err := mgr.httpClient.Get(mockSrv.URL + "/directory")
+	if err != nil {
+		t.Fatalf("Fetch directory: %v", err)
+	}
+	defer resp.Body.Close()
+	json.NewDecoder(resp.Body).Decode(&mgr.directory)
+
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	mgr.account = &acmeAccount{Key: key}
+	mgr.registerAccount()
+
+	// Create a TLS Manager and inject the ACME manager
+	m, err := NewManager(Config{
+		Domain:   "test.local",
+		CertDir:  dir,
+		AutoCert: true,
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	m.acme = mgr
+
+	// GetCertificate should use ACME path
+	hello := &tls.ClientHelloInfo{ServerName: "acmetest.test.local"}
+	cert, err := m.GetCertificate(hello)
+	if err != nil {
+		t.Fatalf("GetCertificate ACME path: %v", err)
+	}
+	if cert == nil {
+		t.Fatal("Expected certificate from ACME path")
+	}
+}
+
+func TestNewManager_ACMEFallbackToSelfSigned(t *testing.T) {
+	// NewManager with an invalid ACME email/server should fall back gracefully
+	dir := t.TempDir()
+	m, err := NewManager(Config{
+		Domain:   "test.local",
+		CertDir:  dir,
+		AutoCert: true,
+		Email:    "test@example.com",
+		// staging=false, so it tries real Let's Encrypt which will fail in test
+		UseStaging: true,
+	})
+	// This should not error — it logs a warning and falls back
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	// ACME may or may not be enabled depending on network
+	// Just verify the manager is functional
+	if m == nil {
+		t.Fatal("Manager should not be nil")
+	}
+
+	// Should still work with self-signed fallback
+	hello := &tls.ClientHelloInfo{ServerName: "fallback.test.local"}
+	cert, err := m.GetCertificate(hello)
+	if err != nil {
+		t.Fatalf("GetCertificate fallback: %v", err)
+	}
+	if cert == nil {
+		t.Fatal("Expected self-signed certificate fallback")
+	}
+}
+
+// mockACMEServerForCerts is a simpler mock ACME server for certs_test.go
+func mockACMEServerForCerts(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	caSerial, _ := rand.Int(rand.Reader, big.NewInt(1000000))
+	caTemplate := &x509.Certificate{
+		SerialNumber:          caSerial,
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	caDER, _ := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+
+	mux := http.NewServeMux()
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r)
+	}))
+	base := srv.URL
+
+	mux.HandleFunc("/directory", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(acmeDirectory{
+			NewNonce:   base + "/nonce",
+			NewAccount: base + "/account",
+			NewOrder:   base + "/order",
+		})
+	})
+
+	mux.HandleFunc("/nonce", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Replay-Nonce", "nonce-1")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mux.HandleFunc("/account", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", base+"/account/1")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]string{"status": "valid"})
+	})
+
+	mux.HandleFunc("/account/1", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "valid"})
+	})
+
+	mux.HandleFunc("/order", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", base+"/order/1")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(acmeOrder{
+			Status:         "pending",
+			Authorizations: []string{base + "/authz/1"},
+			Finalize:       base + "/finalize",
+		})
+	})
+
+	mux.HandleFunc("/order/1", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(acmeOrder{
+			Status:      "ready",
+			Finalize:    base + "/finalize",
+			Certificate: base + "/cert",
+		})
+	})
+
+	mux.HandleFunc("/authz/1", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(acmeAuthorization{
+			Status:     "valid",
+			Identifier: acmeIdentifier{Type: "dns", Value: "acmetest.test.local"},
+		})
+	})
+
+	mux.HandleFunc("/finalize", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(acmeOrder{
+			Status:      "valid",
+			Certificate: base + "/cert",
+		})
+	})
+
+	mux.HandleFunc("/cert", func(w http.ResponseWriter, r *http.Request) {
+		// Issue a cert signed by our CA
+		certKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		serial, _ := rand.Int(rand.Reader, big.NewInt(1000))
+		tmpl := &x509.Certificate{
+			SerialNumber: serial,
+			NotBefore:    time.Now(),
+			NotAfter:     time.Now().Add(90 * 24 * time.Hour),
+			DNSNames:     []string{"acmetest.test.local"},
+		}
+		certDER, _ := x509.CreateCertificate(rand.Reader, tmpl, caTemplate, &certKey.PublicKey, caKey)
+		certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+		caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
+		w.Header().Set("Content-Type", "application/pem-certificate-chain")
+		w.Write(certPEM)
+		w.Write(caPEM)
+	})
+
+	return srv
+}
+
+func TestGetCertificate_ACMEFails_FallsBackToSelfSigned(t *testing.T) {
+	dir := t.TempDir()
+	// Create a Manager with a broken ACME manager (will fail on ObtainCertificate)
+	brokenACME, _ := NewACMEManager("test@example.com", dir, true, nil)
+	// Don't initialize it — calls will fail
+
+	m, err := NewManager(Config{
+		Domain:   "test.local",
+		CertDir:  dir,
+		AutoCert: true,
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	m.acme = brokenACME
+
+	// Should fall back to self-signed when ACME fails
+	hello := &tls.ClientHelloInfo{ServerName: "broken.test.local"}
+	cert, err := m.GetCertificate(hello)
+	if err != nil {
+		t.Fatalf("GetCertificate should fall back: %v", err)
+	}
+	if cert == nil {
+		t.Fatal("Expected self-signed fallback certificate")
+	}
+}
+
+// Ensure context import is used
+var _ = context.Background

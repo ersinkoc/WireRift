@@ -14,7 +14,7 @@ func IsValidSubdomain(subdomain string) bool {
 
 	// Check all characters
 	for _, c := range subdomain {
-		if !isAlphaNum(byte(c)) && c != '-' {
+		if c > 127 || (!isAlphaNum(byte(c)) && c != '-') {
 			return false
 		}
 	}

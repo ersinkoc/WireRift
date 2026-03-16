@@ -195,7 +195,7 @@ func (m *Manager) Middleware() func(http.Handler) http.Handler {
 
 			_, _, err := m.ValidateToken(parts[1])
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusUnauthorized)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
 

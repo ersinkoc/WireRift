@@ -1,6 +1,7 @@
 package tls
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -581,7 +582,7 @@ func TestSignedPost_MockServer(t *testing.T) {
 		"termsOfServiceAgreed": true,
 		"contact":             []string{"mailto:test@example.com"},
 	})
-	resp, err := mgr.signedPost(mgr.directory.NewAccount, payload)
+	resp, err := mgr.signedPost(context.Background(),mgr.directory.NewAccount, payload)
 	if err != nil {
 		t.Fatalf("signedPost failed: %v", err)
 	}
@@ -599,7 +600,7 @@ func TestSignedPost_NilPayload(t *testing.T) {
 	mgr := setupMockManager(t, mockSrv)
 
 	// signedPost with nil payload (POST-as-GET)
-	resp, err := mgr.signedPost(mockSrv.URL+"/authz/1", nil)
+	resp, err := mgr.signedPost(context.Background(),mockSrv.URL+"/authz/1", nil)
 	if err != nil {
 		t.Fatalf("signedPost with nil payload failed: %v", err)
 	}
@@ -632,7 +633,7 @@ func TestSignedPost_ErrorResponse(t *testing.T) {
 		NewAccount: errorSrv.URL + "/account",
 	}
 
-	_, err := mgr.signedPost(errorSrv.URL+"/account", []byte("{}"))
+	_, err := mgr.signedPost(context.Background(),errorSrv.URL+"/account", []byte("{}"))
 	if err == nil {
 		t.Fatal("Expected error for 403 response")
 	}
@@ -668,7 +669,7 @@ func TestProcessAuthorization_MockServer(t *testing.T) {
 	mgr.registerAccount()
 
 	// processAuthorization should find http-01 challenge, post to it, poll until valid
-	err := mgr.processAuthorization(mockSrv.URL + "/authz/1")
+	err := mgr.processAuthorization(context.Background(),mockSrv.URL + "/authz/1")
 	if err != nil {
 		t.Fatalf("processAuthorization failed: %v", err)
 	}
@@ -700,7 +701,7 @@ func TestProcessAuthorization_AlreadyValid(t *testing.T) {
 		NewNonce: validSrv.URL + "/nonce",
 	}
 
-	err := mgr.processAuthorization(validSrv.URL + "/authz/1")
+	err := mgr.processAuthorization(context.Background(),validSrv.URL + "/authz/1")
 	if err != nil {
 		t.Fatalf("Already-valid authz should succeed: %v", err)
 	}
@@ -742,7 +743,7 @@ func TestProcessAuthorization_NoHTTP01Challenge(t *testing.T) {
 		NewNonce: dnsSrv.URL + "/nonce",
 	}
 
-	err := mgr.processAuthorization(dnsSrv.URL + "/authz/1")
+	err := mgr.processAuthorization(context.Background(),dnsSrv.URL + "/authz/1")
 	if err == nil {
 		t.Fatal("Expected error for missing http-01 challenge")
 	}
@@ -761,7 +762,7 @@ func TestObtainCertificate_MockServer(t *testing.T) {
 		t.Fatalf("registerAccount failed: %v", err)
 	}
 
-	bundle, err := mgr.ObtainCertificate([]string{"test.example.com"})
+	bundle, err := mgr.ObtainCertificate(context.Background(), []string{"test.example.com"})
 	if err != nil {
 		t.Fatalf("ObtainCertificate failed: %v", err)
 	}
@@ -813,7 +814,7 @@ func TestGetNonce_MockServer(t *testing.T) {
 	defer mockSrv.Close()
 	mgr := setupMockManager(t, mockSrv)
 
-	nonce, err := mgr.getNonce()
+	nonce, err := mgr.getNonce(context.Background())
 	if err != nil {
 		t.Fatalf("getNonce failed: %v", err)
 	}
@@ -833,7 +834,7 @@ func TestSignedPost_WithKID(t *testing.T) {
 	// Set account URL so kid is used instead of jwk
 	mgr.account.URL = mockSrv.URL + "/account/1"
 
-	resp, err := mgr.signedPost(mockSrv.URL+"/order/1", nil)
+	resp, err := mgr.signedPost(context.Background(),mockSrv.URL+"/order/1", nil)
 	if err != nil {
 		t.Fatalf("signedPost with kid failed: %v", err)
 	}
@@ -853,7 +854,7 @@ func TestSignedPost_WithoutKID(t *testing.T) {
 	payload, _ := json.Marshal(map[string]interface{}{
 		"termsOfServiceAgreed": true,
 	})
-	resp, err := mgr.signedPost(mgr.directory.NewAccount, payload)
+	resp, err := mgr.signedPost(context.Background(),mgr.directory.NewAccount, payload)
 	if err != nil {
 		t.Fatalf("signedPost without kid failed: %v", err)
 	}
@@ -905,5 +906,230 @@ func TestInitialize_MockServer(t *testing.T) {
 	}
 	if mgr.directory.NewOrder == "" {
 		t.Error("Directory NewOrder empty")
+	}
+}
+
+func TestInitialize_KeyPersistence(t *testing.T) {
+	mockSrv := mockACMEServer(t)
+	defer mockSrv.Close()
+
+	dir := t.TempDir()
+	mgr, err := NewACMEManager("test@example.com", dir, true, nil)
+	if err != nil {
+		t.Fatalf("NewACMEManager: %v", err)
+	}
+
+	// Manually set directory to our mock
+	resp, err := mgr.httpClient.Get(mockSrv.URL + "/directory")
+	if err != nil {
+		t.Fatalf("Fetch directory: %v", err)
+	}
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(&mgr.directory); err != nil {
+		t.Fatalf("Decode directory: %v", err)
+	}
+
+	// Test loadOrCreateKey (creates new key)
+	keyPath := filepath.Join(dir, "acme-account.key")
+	key, err := mgr.loadOrCreateKey(keyPath)
+	if err != nil {
+		t.Fatalf("loadOrCreateKey (create): %v", err)
+	}
+	mgr.account = &acmeAccount{Key: key}
+
+	// Test loadOrCreateKey (loads existing key)
+	key2, err := mgr.loadOrCreateKey(keyPath)
+	if err != nil {
+		t.Fatalf("loadOrCreateKey (load): %v", err)
+	}
+	if key.D.Cmp(key2.D) != 0 {
+		t.Error("Loaded key should match created key")
+	}
+
+	// Test registerAccount
+	if err := mgr.registerAccount(); err != nil {
+		t.Fatalf("registerAccount: %v", err)
+	}
+	if mgr.account.URL == "" {
+		t.Error("Account URL should be set after registration")
+	}
+}
+
+func TestStartAutoRenewal(t *testing.T) {
+	mockSrv := mockACMEServer(t)
+	defer mockSrv.Close()
+	mgr := setupMockManager(t, mockSrv)
+
+	if err := mgr.registerAccount(); err != nil {
+		t.Fatalf("registerAccount: %v", err)
+	}
+
+	// Track calls
+	var getCalled, setCalled bool
+	getCert := func(domain string) *CertificateBundle {
+		getCalled = true
+		// Return a bundle that needs renewal (expires soon)
+		return &CertificateBundle{
+			ExpiresAt: time.Now().Add(10 * 24 * time.Hour), // 10 days, needs renewal (<30 days)
+		}
+	}
+	setCert := func(domain string, b *CertificateBundle) {
+		setCalled = true
+	}
+
+	done := make(chan struct{})
+	mgr.StartAutoRenewal([]string{"test.example.com"}, getCert, setCert, done)
+
+	// Wait briefly — the renewal goroutine uses a 12h ticker, so we can't wait for it
+	// Instead, just verify it started without panic and close immediately
+	time.Sleep(50 * time.Millisecond)
+	close(done)
+	time.Sleep(50 * time.Millisecond)
+
+	// The goroutine should have stopped cleanly
+	// getCalled/setCalled may not be true since ticker hasn't fired, that's OK
+	_ = getCalled
+	_ = setCalled
+}
+
+func TestObtainCertificate_ContextCancellation(t *testing.T) {
+	// Create a mock server that delays responses
+	slowSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "HEAD" {
+			w.Header().Set("Replay-Nonce", "nonce-1")
+			return
+		}
+		// Delay to test cancellation
+		time.Sleep(5 * time.Second)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer slowSrv.Close()
+
+	dir := t.TempDir()
+	mgr, _ := NewACMEManager("test@example.com", dir, true, nil)
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	mgr.account = &acmeAccount{Key: key, URL: slowSrv.URL + "/account/1"}
+	mgr.directory = acmeDirectory{
+		NewNonce: slowSrv.URL + "/nonce",
+		NewOrder: slowSrv.URL + "/order",
+	}
+
+	// Cancel immediately
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, err := mgr.ObtainCertificate(ctx, []string{"test.example.com"})
+	if err == nil {
+		t.Fatal("Expected error from cancelled context")
+	}
+}
+
+func TestEstimateExpiry_InvalidPEM(t *testing.T) {
+	_, err := EstimateExpiry([]byte("not valid PEM"))
+	if err == nil {
+		t.Error("Expected error for invalid PEM")
+	}
+}
+
+func TestTLSCertificate_Valid(t *testing.T) {
+	// Create a minimal valid bundle
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	serial, _ := rand.Int(rand.Reader, big.NewInt(1000))
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+	}
+	certDER, _ := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+
+	bundle := &CertificateBundle{
+		CertPEM:    certPEM,
+		PrivateKey: key,
+	}
+
+	tlsCert, err := bundle.TLSCertificate()
+	if err != nil {
+		t.Fatalf("TLSCertificate: %v", err)
+	}
+	if tlsCert == nil {
+		t.Fatal("TLSCertificate returned nil")
+	}
+}
+
+func TestInitialize_WithMockTransport(t *testing.T) {
+	mockSrv := mockACMEServer(t)
+	defer mockSrv.Close()
+
+	dir := t.TempDir()
+	mgr, err := NewACMEManager("test@example.com", dir, true, nil)
+	if err != nil {
+		t.Fatalf("NewACMEManager: %v", err)
+	}
+
+	// Replace the httpClient to redirect staging URL to mock server
+	originalTransport := http.DefaultTransport.(*http.Transport).Clone()
+	mgr.httpClient = &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			// Redirect staging URL to mock
+			if req.URL.String() == LetsEncryptStaging {
+				req = req.Clone(req.Context())
+				req.URL, _ = req.URL.Parse(mockSrv.URL + "/directory")
+			} else if strings.HasPrefix(req.URL.String(), "https://") {
+				// Redirect any ACME URL to mock
+				path := req.URL.Path
+				req = req.Clone(req.Context())
+				req.URL, _ = req.URL.Parse(mockSrv.URL + path)
+			}
+			return originalTransport.RoundTrip(req)
+		}),
+	}
+
+	err = mgr.Initialize()
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	if mgr.account == nil {
+		t.Fatal("account should be set after Initialize")
+	}
+	if mgr.account.URL == "" {
+		t.Error("account URL should be set")
+	}
+	if mgr.directory.NewNonce == "" {
+		t.Error("directory.NewNonce should be set")
+	}
+
+	// Verify key was persisted
+	keyPath := filepath.Join(dir, "acme-account.key")
+	if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+		t.Error("Account key should be saved to disk")
+	}
+}
+
+// roundTripFunc is an adapter to use a function as http.RoundTripper.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestNewACMEManager_EmptyEmail(t *testing.T) {
+	_, err := NewACMEManager("", t.TempDir(), false, nil)
+	if err == nil {
+		t.Error("Expected error for empty email")
+	}
+}
+
+func TestNewACMEManager_DefaultCertDir(t *testing.T) {
+	// Use a temp dir as working directory for "certs" default
+	origDir := t.TempDir()
+	mgr, err := NewACMEManager("test@example.com", origDir, true, nil)
+	if err != nil {
+		t.Fatalf("NewACMEManager: %v", err)
+	}
+	if mgr.certDir != origDir {
+		t.Errorf("certDir = %q, want %q", mgr.certDir, origDir)
 	}
 }

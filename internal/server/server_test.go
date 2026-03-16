@@ -3432,7 +3432,7 @@ func TestCheckPINWithQueryParam(t *testing.T) {
 		t.Errorf("Expected 302 redirect, got %d", rec.Code)
 	}
 	// Check cookie was set with HMAC value (not raw PIN)
-	expectedMAC := pinMAC("5678", "myapp")
+	expectedMAC := s.pinMAC("5678", "myapp")
 	cookies := rec.Result().Cookies()
 	found := false
 	for _, c := range cookies {
@@ -3449,7 +3449,7 @@ func TestCheckPINWithCookie(t *testing.T) {
 	s := New(DefaultConfig(), nil)
 
 	// Cookie stores HMAC, not raw PIN
-	mac := pinMAC("secret", "myapp")
+	mac := s.pinMAC("secret", "myapp")
 	req := httptest.NewRequest("GET", "/test", nil)
 	req.AddCookie(&http.Cookie{Name: "wirerift_pin_myapp", Value: mac})
 	rec := httptest.NewRecorder()
@@ -4349,5 +4349,157 @@ func TestInspectResponseWriterImplicitOK(t *testing.T) {
 	iw.Write([]byte("hello"))
 	if iw.statusCode != http.StatusOK {
 		t.Errorf("statusCode = %d, want 200 (implicit)", iw.statusCode)
+	}
+}
+
+func TestInspectResponseWriterFlush(t *testing.T) {
+	rec := httptest.NewRecorder()
+	iw := &inspectResponseWriter{
+		ResponseWriter: rec,
+		customHeaders:  map[string]string{},
+	}
+
+	// httptest.ResponseRecorder implements http.Flusher
+	iw.Flush()
+	if !rec.Flushed {
+		t.Error("Flush should delegate to underlying ResponseWriter")
+	}
+}
+
+func TestInspectResponseWriterHijack(t *testing.T) {
+	// Create a real TCP connection for hijacking
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	// Test with a hijackable ResponseWriter (real HTTP server connection)
+	// We simulate by testing that the interface is detected
+	rec := httptest.NewRecorder()
+	iw := &inspectResponseWriter{
+		ResponseWriter: rec,
+		customHeaders:  map[string]string{},
+	}
+
+	// httptest.ResponseRecorder does NOT implement http.Hijacker
+	_, _, err = iw.Hijack()
+	if err == nil {
+		t.Error("Hijack should fail on non-hijackable ResponseWriter")
+	}
+	if !strings.Contains(err.Error(), "does not support hijacking") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestExtractSubdomain_CaseInsensitive(t *testing.T) {
+	tests := []struct {
+		host, domain, expected string
+	}{
+		{"MyApp.wirerift.com", "wirerift.com", "myapp"},
+		{"UPPER.WIRERIFT.COM", "wirerift.com", "upper"},
+		{"Mixed.WireRift.Com", "wirerift.com", "mixed"},
+		{"sub.WireRift.COM:8080", "wirerift.com", "sub"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.host, func(t *testing.T) {
+			result := extractSubdomain(tt.host, tt.domain)
+			if result != tt.expected {
+				t.Errorf("extractSubdomain(%q, %q) = %q, want %q", tt.host, tt.domain, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestHealthzEndpoint(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ControlAddr = ":0"
+	cfg.HTTPAddr = ":0"
+	cfg.HeartbeatInterval = time.Hour
+	cfg.SessionTimeout = time.Hour
+
+	s := New(cfg, nil)
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Stop()
+
+	resp, err := http.Get("http://" + s.HTTPAddr() + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `"status":"ok"`) {
+		t.Errorf("Body = %q, want status ok", string(body))
+	}
+}
+
+func TestRequestIDHeader(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Domain = "test.local"
+	cfg.ControlAddr = ":0"
+	cfg.HTTPAddr = ":0"
+	cfg.HeartbeatInterval = time.Hour
+	cfg.SessionTimeout = time.Hour
+
+	s := New(cfg, nil)
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Stop()
+
+	// Request to a subdomain (will fail with 502 since no tunnel, but should get X-Request-ID)
+	req, _ := http.NewRequest("GET", "http://"+s.HTTPAddr()+"/test", nil)
+	req.Host = "myapp.test.local"
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	reqID := resp.Header.Get("X-Request-ID")
+	if reqID == "" {
+		t.Error("Expected X-Request-ID header in response")
+	}
+	if len(reqID) != 16 { // 8 bytes hex = 16 chars
+		t.Errorf("X-Request-ID length = %d, want 16", len(reqID))
+	}
+}
+
+func TestRequestIDPreserved(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Domain = "test.local"
+	cfg.ControlAddr = ":0"
+	cfg.HTTPAddr = ":0"
+	cfg.HeartbeatInterval = time.Hour
+	cfg.SessionTimeout = time.Hour
+
+	s := New(cfg, nil)
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Stop()
+
+	// Send request with existing X-Request-ID — should be preserved
+	req, _ := http.NewRequest("GET", "http://"+s.HTTPAddr()+"/test", nil)
+	req.Host = "myapp.test.local"
+	req.Header.Set("X-Request-ID", "my-custom-id-123")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	reqID := resp.Header.Get("X-Request-ID")
+	if reqID != "my-custom-id-123" {
+		t.Errorf("X-Request-ID = %q, want my-custom-id-123 (should preserve caller's ID)", reqID)
 	}
 }

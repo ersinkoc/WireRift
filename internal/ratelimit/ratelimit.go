@@ -251,7 +251,8 @@ func (s *SlidingWindow) AllowAt(now time.Time) bool {
 		}
 		validIdx = i + 1
 	}
-	s.events = s.events[validIdx:]
+	n := copy(s.events, s.events[validIdx:])
+	s.events = s.events[:n]
 
 	// Check if we can add a new event
 	if len(s.events) >= s.maxEvents {
