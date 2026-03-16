@@ -242,7 +242,7 @@ func doHTTP(parentCtx context.Context, args []string) error {
 	clientCfg := client.DefaultConfig()
 	clientCfg.ServerAddr = opts.server
 	clientCfg.Token = opts.token
-	clientCfg.Reconnect = false
+	clientCfg.Reconnect = true
 	c := client.New(clientCfg, logger)
 
 	ctx, cancel := context.WithCancel(parentCtx)
@@ -366,7 +366,7 @@ func doTCP(parentCtx context.Context, args []string) error {
 	clientCfg := client.DefaultConfig()
 	clientCfg.ServerAddr = opts.server
 	clientCfg.Token = opts.token
-	clientCfg.Reconnect = false
+	clientCfg.Reconnect = true
 	c := client.New(clientCfg, logger)
 
 	ctx, cancel := context.WithCancel(parentCtx)
@@ -443,7 +443,7 @@ func doStart(parentCtx context.Context, args []string) error {
 	startCfg := client.DefaultConfig()
 	startCfg.ServerAddr = cfg.Server
 	startCfg.Token = cfg.Token
-	startCfg.Reconnect = false
+	startCfg.Reconnect = true
 	c := client.New(startCfg, logger)
 
 	// Connect to server
@@ -707,7 +707,7 @@ func doServe(parentCtx context.Context, args []string) error {
 	clientCfg := client.DefaultConfig()
 	clientCfg.ServerAddr = opts.server
 	clientCfg.Token = opts.token
-	clientCfg.Reconnect = false
+	clientCfg.Reconnect = true
 	c := client.New(clientCfg, logger)
 
 	ctx, cancel := context.WithCancel(parentCtx)
