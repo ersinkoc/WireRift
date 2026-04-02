@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="wirerift.png" alt="WireRift Overview" width="100%">
+  <img src="wirerift.jpeg" alt="WireRift Overview" width="100%">
 </p>
 
 Open-source, zero-dependency tunnel server and client written in Go. Expose any local service to the internet through a secure tunnel — like ngrok, but fully self-hosted.
