@@ -174,7 +174,7 @@ func (m *DomainManager) GetDNSRecords(domain string) ([]DNSRecord, error) {
 // ListDomains lists all domains for an account.
 func (m *DomainManager) ListDomains(accountID string) []*CustomDomain {
 	var domains []*CustomDomain
-	m.domains.Range(func(key, value any) bool {
+	m.domains.Range(func(_, value any) bool {
 		d := value.(*CustomDomain)
 		if d.AccountID == accountID {
 			domains = append(domains, d)
@@ -216,4 +216,3 @@ func generateVerificationCode(domain string) string {
 	rand.Read(b)
 	return "wrv_" + domain[:min(8, len(domain))] + "_" + hex.EncodeToString(b[:8])
 }
-

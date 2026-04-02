@@ -162,20 +162,20 @@ Environment Variables:
 	fmt.Fprintln(os.Stderr, "╔══════════════════════════════════════════════╗")
 	fmt.Fprintln(os.Stderr, "║              WireRift Server                 ║")
 	fmt.Fprintln(os.Stderr, "╠══════════════════════════════════════════════╣")
-	fmt.Fprintf(os.Stderr,  "  Control:   %s\n", *controlAddr)
-	fmt.Fprintf(os.Stderr,  "  HTTP:      %s\n", *httpAddr)
-	fmt.Fprintf(os.Stderr,  "  Dashboard: http://localhost:%d\n", *dashboardAddr)
-	fmt.Fprintf(os.Stderr,  "  Domain:    %s\n", *domain)
+	fmt.Fprintf(os.Stderr, "  Control:   %s\n", *controlAddr)
+	fmt.Fprintf(os.Stderr, "  HTTP:      %s\n", *httpAddr)
+	fmt.Fprintf(os.Stderr, "  Dashboard: http://localhost:%d\n", *dashboardAddr)
+	fmt.Fprintf(os.Stderr, "  Domain:    %s\n", *domain)
 	fmt.Fprintln(os.Stderr, "╠══════════════════════════════════════════════╣")
-	fmt.Fprintf(os.Stderr,  "  Token (%s):\n", tokenSource)
-	fmt.Fprintf(os.Stderr,  "  %s\n", devToken)
+	fmt.Fprintf(os.Stderr, "  Token (%s):\n", tokenSource)
+	fmt.Fprintf(os.Stderr, "  %s\n", devToken)
 	fmt.Fprintln(os.Stderr, "╠══════════════════════════════════════════════╣")
 	fmt.Fprintln(os.Stderr, "  Quick start:")
 	serverAddr := *controlAddr
 	if strings.HasPrefix(serverAddr, ":") {
 		serverAddr = "localhost" + serverAddr
 	}
-	fmt.Fprintf(os.Stderr,  "  wirerift http 8080 -server %s -token %s\n", serverAddr, devToken)
+	fmt.Fprintf(os.Stderr, "  wirerift http 8080 -server %s -token %s\n", serverAddr, devToken)
 	fmt.Fprintln(os.Stderr, "╚══════════════════════════════════════════════╝")
 
 	// Create domain manager

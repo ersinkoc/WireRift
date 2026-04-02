@@ -17,10 +17,10 @@ var (
 
 // Frame represents a single protocol frame.
 type Frame struct {
-	Version  byte       // Protocol version (currently 0x01)
-	Type     FrameType  // Frame type
-	StreamID uint32     // Stream identifier (0 = control stream)
-	Payload  []byte     // Frame payload (0 to 16 MB)
+	Version  byte      // Protocol version (currently 0x01)
+	Type     FrameType // Frame type
+	StreamID uint32    // Stream identifier (0 = control stream)
+	Payload  []byte    // Frame payload (0 to 16 MB)
 }
 
 // headerPool is a pool for reusing header buffers.

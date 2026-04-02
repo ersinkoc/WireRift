@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 )
@@ -71,47 +72,6 @@ func TestTokenIsExpired(t *testing.T) {
 	}
 	if neverExpires.IsExpired() {
 		t.Error("Token with zero ExpiresAt should not expire")
-	}
-}
-
-func TestCreateAccount(t *testing.T) {
-	m := NewManager()
-
-	account, err := m.CreateAccount("test@example.com", "Test User")
-	if err != nil {
-		t.Fatalf("CreateAccount: %v", err)
-	}
-	if account.Email != "test@example.com" {
-		t.Errorf("Email = %q, want %q", account.Email, "test@example.com")
-	}
-	if !account.Active {
-		t.Error("Account should be active")
-	}
-}
-
-func TestCreateAndRevokeToken(t *testing.T) {
-	m := NewManager()
-
-	// Create account and token
-	account, _ := m.CreateAccount("test@example.com", "Test User")
-	token, err := m.CreateToken(account.ID, "Test Token", 1*time.Hour)
-	if err != nil {
-		t.Fatalf("CreateToken: %v", err)
-	}
-
-	// Validate token works
-	_, _, err = m.ValidateToken(token.Secret)
-	if err != nil {
-		t.Fatalf("ValidateToken: %v", err)
-	}
-
-	// Revoke token
-	m.RevokeToken(token.ID)
-
-	// Should fail now
-	_, _, err = m.ValidateToken(token.Secret)
-	if err != ErrInvalidToken {
-		t.Errorf("Error = %v, want %v", err, ErrInvalidToken)
 	}
 }
 
@@ -230,8 +190,14 @@ func TestMiddlewareInvalidAuthHeader(t *testing.T) {
 func TestValidateTokenExpiredInStore(t *testing.T) {
 	m := NewManager()
 
-	// Create account
-	account, _ := m.CreateAccount("test@example.com", "Test User")
+	// Create account manually
+	account := &Account{
+		ID:     "acc_test123",
+		Email:  "test@example.com",
+		Name:   "Test User",
+		Active: true,
+	}
+	m.accounts.Store(account.ID, account)
 
 	// Manually store an expired token
 	expiredToken := &Token{
@@ -270,21 +236,6 @@ func TestValidateTokenAccountNotFound(t *testing.T) {
 	_, _, err := m.ValidateToken(orphanToken.Secret)
 	if err != ErrInvalidToken {
 		t.Errorf("Error = %v, want %v", err, ErrInvalidToken)
-	}
-}
-
-// TestCreateTokenInactiveAccount tests creating a token for an inactive account
-func TestCreateTokenInactiveAccount(t *testing.T) {
-	m := NewManager()
-
-	// Create account and then deactivate it
-	account, _ := m.CreateAccount("test@example.com", "Test User")
-	account.Active = false
-
-	// Try to create token for inactive account
-	_, err := m.CreateToken(account.ID, "Test Token", 1*time.Hour)
-	if err != ErrUnauthorized {
-		t.Errorf("Error = %v, want %v", err, ErrUnauthorized)
 	}
 }
 
@@ -352,5 +303,139 @@ func TestBasicAuthInvalidHeader(t *testing.T) {
 	protected.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("Code = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+// TestNewManagerWithEnvToken tests NewManager when WIRERIFT_TOKEN env var is set.
+func TestNewManagerWithEnvToken(t *testing.T) {
+	// Set env var
+	os.Setenv("WIRERIFT_TOKEN", "env_token_12345")
+	defer os.Unsetenv("WIRERIFT_TOKEN")
+
+	m := NewManager()
+
+	// DevToken should use the env var value
+	token := m.DevToken()
+	if token != "env_token_12345" {
+		t.Errorf("DevToken = %q, want env_token_12345", token)
+	}
+}
+
+// TestNewManagerWithExplicitToken tests that explicit token takes precedence over env.
+func TestNewManagerWithExplicitToken(t *testing.T) {
+	// Set env var
+	os.Setenv("WIRERIFT_TOKEN", "env_token_12345")
+	defer os.Unsetenv("WIRERIFT_TOKEN")
+
+	// Explicit token should take precedence
+	m := NewManager("explicit_token_67890")
+
+	token := m.DevToken()
+	if token != "explicit_token_67890" {
+		t.Errorf("DevToken = %q, want explicit_token_67890", token)
+	}
+}
+
+// TestValidateTokenNotFound tests validation when token is not found.
+func TestValidateTokenNotFound(t *testing.T) {
+	m := NewManager()
+
+	// Try to validate a token that doesn't exist
+	_, _, err := m.ValidateToken("nonexistent_token_12345")
+	if err != ErrInvalidToken {
+		t.Errorf("Error = %v, want %v", err, ErrInvalidToken)
+	}
+}
+
+// TestValidateTokenExpiredInStore tests validation of an expired token in store.
+func TestValidateTokenExpiredInStore2(t *testing.T) {
+	m := NewManager()
+
+	// Create account manually
+	account := &Account{
+		ID:     "acc_test123",
+		Email:  "test@example.com",
+		Name:   "Test User",
+		Active: true,
+	}
+	m.accounts.Store(account.ID, account)
+
+	// Manually store an expired token
+	expiredToken := &Token{
+		ID:        "tk_expired",
+		AccountID: account.ID,
+		Name:      "Expired Token",
+		CreatedAt: time.Now().Add(-2 * time.Hour),
+		ExpiresAt: time.Now().Add(-1 * time.Hour),
+		Secret:    "sk_expired_secret_12345",
+	}
+	m.tokens.Store(expiredToken.ID, expiredToken)
+
+	// Validate should return ErrInvalidToken because the token is expired
+	_, _, err := m.ValidateToken(expiredToken.Secret)
+	if err != ErrInvalidToken {
+		t.Errorf("Error = %v, want %v", err, ErrInvalidToken)
+	}
+}
+
+// TestValidateTokenValidInStore tests validation of a valid token in store.
+func TestValidateTokenValidInStore(t *testing.T) {
+	m := NewManager()
+
+	// Create account manually
+	account := &Account{
+		ID:     "acc_valid",
+		Email:  "valid@example.com",
+		Name:   "Valid User",
+		Active: true,
+	}
+	m.accounts.Store(account.ID, account)
+
+	// Manually store a valid token (not expired)
+	validToken := &Token{
+		ID:        "tk_valid",
+		AccountID: account.ID,
+		Name:      "Valid Token",
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(1 * time.Hour),
+		Secret:    "sk_valid_secret_12345",
+	}
+	m.tokens.Store(validToken.ID, validToken)
+
+	// Validate should succeed
+	token, acc, err := m.ValidateToken(validToken.Secret)
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+	if token == nil {
+		t.Error("Token should not be nil")
+	}
+	if acc == nil {
+		t.Error("Account should not be nil")
+	}
+	if token.ID != "tk_valid" {
+		t.Errorf("Token ID = %q, want tk_valid", token.ID)
+	}
+}
+
+// TestValidateTokenAccountNotFound tests validation when token's account doesn't exist.
+func TestValidateTokenAccountNotFound2(t *testing.T) {
+	m := NewManager()
+
+	// Store a token with an account ID that doesn't exist
+	orphanToken := &Token{
+		ID:        "tk_orphan2",
+		AccountID: "nonexistent_account_123",
+		Name:      "Orphan Token",
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(1 * time.Hour),
+		Secret:    "sk_orphan_secret_12345",
+	}
+	m.tokens.Store(orphanToken.ID, orphanToken)
+
+	// Validate should return ErrInvalidToken because the account is not found
+	_, _, err := m.ValidateToken(orphanToken.Secret)
+	if err != ErrInvalidToken {
+		t.Errorf("Error = %v, want %v", err, ErrInvalidToken)
 	}
 }

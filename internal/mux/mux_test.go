@@ -144,26 +144,9 @@ func TestStreamMetadata(t *testing.T) {
 
 	stream.SetMetadata("192.168.1.1:12345", "http", "")
 
-	if stream.RemoteAddr() != "192.168.1.1:12345" {
-		t.Errorf("RemoteAddr = %q, want %q", stream.RemoteAddr(), "192.168.1.1:12345")
-	}
 	if stream.Protocol() != "http" {
 		t.Errorf("Protocol = %q, want %q", stream.Protocol(), "http")
 	}
-}
-
-func TestMuxLocalRemoteAddr(t *testing.T) {
-	client, server := newTestPipe(t)
-
-	if client.LocalAddr() == nil {
-		t.Error("LocalAddr should not be nil")
-	}
-	if client.RemoteAddr() == nil {
-		t.Error("RemoteAddr should not be nil")
-	}
-
-	client.Close()
-	server.Close()
 }
 
 func TestMuxConfigDefaults(t *testing.T) {
@@ -344,22 +327,6 @@ func TestStreamReset(t *testing.T) {
 	client.Close()
 }
 
-func TestStreamCloseRead(t *testing.T) {
-	client, server := newTestPipe(t)
-
-	// Start run loop to drain
-	go server.Run()
-
-	stream, _ := client.OpenStream()
-
-	// Close read side
-	if err := stream.CloseRead(); err != nil {
-		t.Fatalf("CloseRead failed: %v", err)
-	}
-
-	client.Close()
-}
-
 func TestMuxGetStream(t *testing.T) {
 	client, _ := newTestPipe(t)
 	stream, _ := client.OpenStream()
@@ -393,26 +360,6 @@ func TestMuxRemoveStream(t *testing.T) {
 	_, ok := client.getStream(stream.ID())
 	if ok {
 		t.Error("Stream should be removed")
-	}
-
-	client.Close()
-}
-
-func TestMuxNextServerStreamID(t *testing.T) {
-	client, _ := newTestPipe(t)
-
-	// Server stream IDs should be odd
-	id1 := client.NextServerStreamID()
-	id2 := client.NextServerStreamID()
-
-	if id1%2 == 0 {
-		t.Errorf("Server stream ID %d should be odd", id1)
-	}
-	if id2%2 == 0 {
-		t.Errorf("Server stream ID %d should be odd", id2)
-	}
-	if id2 <= id1 {
-		t.Errorf("Stream IDs should increase: %d <= %d", id2, id1)
 	}
 
 	client.Close()
@@ -494,9 +441,6 @@ func TestMuxHandleStreamOpen(t *testing.T) {
 	// Should be able to accept the stream
 	select {
 	case stream := <-server.accept:
-		if stream.RemoteAddr() != "127.0.0.1:12345" {
-			t.Errorf("RemoteAddr = %q, want %q", stream.RemoteAddr(), "127.0.0.1:12345")
-		}
 		if stream.Protocol() != "http" {
 			t.Errorf("Protocol = %q, want %q", stream.Protocol(), "http")
 		}
@@ -670,26 +614,6 @@ func TestMuxErr(t *testing.T) {
 	// Should have error after close
 	if err := client.Err(); err != ErrMuxClosed {
 		t.Errorf("Err after close = %v, want %v", err, ErrMuxClosed)
-	}
-}
-
-func TestStreamLocalAddr(t *testing.T) {
-	client, server := newTestPipe(t)
-	stream, _ := client.OpenStream()
-
-	if stream.LocalAddr() == nil {
-		t.Error("LocalAddr should not be nil")
-	}
-
-	client.Close()
-	server.Close()
-}
-
-func TestStreamLocalAddrNilMux(t *testing.T) {
-	stream := &Stream{}
-
-	if stream.LocalAddr() != nil {
-		t.Error("LocalAddr should be nil for stream without mux")
 	}
 }
 
@@ -1000,51 +924,10 @@ func TestRingBufferReadEmptyBuffer(t *testing.T) {
 	}
 }
 
-// TestStreamCleanup tests stream cleanup functionality
-func TestStreamCleanup(t *testing.T) {
-	client, _ := newTestPipe(t)
-
-	stream := newStream(1, client, 1000)
-	client.streams.Store(uint32(1), stream)
-
-	// Set cleanup callback
-	cleanupCalled := false
-	stream.onClose = func() {
-		cleanupCalled = true
-	}
-
-	// Call cleanup
-	stream.cleanup()
-
-	if !cleanupCalled {
-		t.Error("onClose callback should be called during cleanup")
-	}
-
-	// Stream should be removed from mux
-	if _, ok := client.getStream(1); ok {
-		t.Error("Stream should be removed from mux")
-	}
-}
-
 // TestStreamReadWithData tests Stream.Read with actual data
 func TestStreamReadWithData(t *testing.T) {
 	// Skip this test - it requires complex setup with proper stream initialization
 	t.Skip("Skipping complex stream read test - requires full mux handshake")
-}
-
-// TestStreamReadClosed tests Stream.Read when stream is closed
-func TestStreamReadClosed(t *testing.T) {
-	stream := newStream(1, nil, 1000)
-
-	// Close the stream for reading
-	stream.CloseRead()
-
-	// Read should return EOF
-	buf := make([]byte, 10)
-	_, err := stream.Read(buf)
-	if err != io.EOF {
-		t.Errorf("Expected io.EOF, got %v", err)
-	}
 }
 
 // TestStreamReadReset tests Stream.Read when stream is reset
@@ -1065,28 +948,6 @@ func TestStreamReadReset(t *testing.T) {
 
 	client.Close()
 	server.Close()
-}
-
-// TestStreamRemoteAddr tests Stream.RemoteAddr
-func TestStreamRemoteAddr(t *testing.T) {
-	client, server := newTestPipe(t)
-
-	stream := newStream(1, client, 1000)
-
-	// Initially should have empty remote addr
-	addr := stream.RemoteAddr()
-	if addr != "" {
-		t.Errorf("RemoteAddr should be empty initially, got %q", addr)
-	}
-
-	// Test with nil mux
-	stream2 := &Stream{}
-	if stream2.RemoteAddr() != "" {
-		t.Error("RemoteAddr should be empty for stream without mux")
-	}
-
-	server.Close()
-	client.Close()
 }
 
 // TestMuxSendStreamWindowUpdate tests sending window update
@@ -1245,54 +1106,6 @@ func TestRingBufferGrowLocked(t *testing.T) {
 	}
 }
 
-// TestRingBufferLenLocked tests lenLocked functionality
-func TestRingBufferLenLocked(t *testing.T) {
-	rb := newRingBuffer(100)
-
-	// Empty buffer
-	if rb.Len() != 0 {
-		t.Errorf("Empty buffer Len = %d, want 0", rb.Len())
-	}
-
-	// Write data
-	rb.Write([]byte("hello"))
-	if rb.Len() != 5 {
-		t.Errorf("After write Len = %d, want 5", rb.Len())
-	}
-
-	// Read some
-	p := make([]byte, 3)
-	rb.Read(p)
-	if rb.Len() != 2 {
-		t.Errorf("After read Len = %d, want 2", rb.Len())
-	}
-}
-
-// TestRingBufferAvailableLocked tests availableLocked functionality
-func TestRingBufferAvailableLocked(t *testing.T) {
-	rb := newRingBuffer(100)
-
-	// Full available
-	avail := rb.Available()
-	if avail != 100 {
-		t.Errorf("Empty buffer Available = %d, want 100", avail)
-	}
-
-	// Write data
-	rb.Write([]byte("hello"))
-	avail = rb.Available()
-	if avail != 95 {
-		t.Errorf("After write Available = %d, want 95", avail)
-	}
-
-	// Fill buffer
-	rb.Write(make([]byte, 95))
-	avail = rb.Available()
-	if avail != 0 {
-		t.Errorf("Full buffer Available = %d, want 0", avail)
-	}
-}
-
 // TestOpenStreamMaxStreamIDExceeded tests OpenStream when MaxStreamID is exceeded.
 func TestOpenStreamMaxStreamIDExceeded(t *testing.T) {
 	client, _ := newTestPipe(t)
@@ -1413,31 +1226,6 @@ func TestHandleErrorMalformedPayload(t *testing.T) {
 	}
 
 	client.Close()
-}
-
-// TestRingBufferWrappedLenLocked tests lenLocked when w < r (wrapped buffer).
-func TestRingBufferWrappedLenLocked(t *testing.T) {
-	rb := newRingBuffer(8)
-
-	// Write 6 bytes
-	rb.Write([]byte("abcdef"))
-
-	// Read 4 bytes to advance read cursor
-	p := make([]byte, 4)
-	rb.Read(p)
-
-	// Now r=4, w=6, data length should be 2
-	if rb.Len() != 2 {
-		t.Errorf("Len = %d, want 2", rb.Len())
-	}
-
-	// Write 5 more bytes - this will wrap around (w wraps past end)
-	rb.Write([]byte("ghijk"))
-
-	// r=4, buffer has been grown or wrapped. Verify length is correct.
-	if rb.Len() != 7 {
-		t.Errorf("Len after wrap = %d, want 7", rb.Len())
-	}
 }
 
 // TestRingBufferGrowWrapped tests growLocked when the buffer data wraps (w < r case).
@@ -1667,29 +1455,6 @@ func TestStreamCloseFromHalfClosedRemote(t *testing.T) {
 	server.Close()
 }
 
-// TestStreamCloseReadFromHalfClosedLocal tests CloseRead when stream is in HalfClosedLocal state.
-func TestStreamCloseReadFromHalfClosedLocal(t *testing.T) {
-	client, _ := newTestPipe(t)
-
-	stream := newStream(1, client, 1000)
-
-	// Set state to HalfClosedLocal
-	stream.state.Store(streamStateHalfClosedLocal)
-
-	// CloseRead should transition to Closed
-	err := stream.CloseRead()
-	if err != nil {
-		t.Errorf("CloseRead failed: %v", err)
-	}
-
-	state := stream.state.Load()
-	if state != streamStateClosed {
-		t.Errorf("State = %d, want %d (streamStateClosed)", state, streamStateClosed)
-	}
-
-	client.Close()
-}
-
 // TestStreamOnCloseFrameFromHalfClosedLocal tests onCloseFrame when stream is HalfClosedLocal.
 func TestStreamOnCloseFrameFromHalfClosedLocal(t *testing.T) {
 	client, _ := newTestPipe(t)
@@ -1774,11 +1539,6 @@ func TestRingBufferGrowLockedNoOp(t *testing.T) {
 	if rb.size != 100 {
 		t.Errorf("Size = %d, want 100 (should not shrink)", rb.size)
 	}
-
-	// Data should still be intact
-	if rb.Len() != 5 {
-		t.Errorf("Len = %d, want 5", rb.Len())
-	}
 }
 
 // TestRingBufferGrowNonWrapped tests growLocked with non-wrapped data (w > r).
@@ -1800,25 +1560,6 @@ func TestRingBufferGrowNonWrapped(t *testing.T) {
 	if string(out[:n]) != "ABCDEFGH" {
 		t.Errorf("Read = %q, want %q", string(out[:n]), "ABCDEFGH")
 	}
-}
-
-// TestRingBufferLenLockedFull tests lenLocked when buffer is full.
-func TestRingBufferLenLockedFull(t *testing.T) {
-	rb := newRingBuffer(8)
-
-	// Fill the buffer completely
-	rb.Write([]byte("12345678"))
-
-	// Buffer should be full, lenLocked returns size
-	if rb.Len() != 8 {
-		t.Errorf("Len = %d, want 8 (full buffer)", rb.Len())
-	}
-
-	rb.mu.Lock()
-	if !rb.full {
-		t.Error("Expected buffer to be full")
-	}
-	rb.mu.Unlock()
 }
 
 // TestStreamWriteWindowWaitThenContinue tests Write when window is 0, receives update, then continues.
@@ -1918,11 +1659,6 @@ func TestRingBufferReadEmptyP(t *testing.T) {
 	}
 	if err != nil {
 		t.Errorf("Read(empty) returned err=%v, want nil", err)
-	}
-
-	// Verify data is still there
-	if rb.Len() != 4 {
-		t.Errorf("Buffer len = %d, want 4 (data should not be consumed)", rb.Len())
 	}
 }
 
@@ -2041,9 +1777,6 @@ func TestHandleStreamOpenWithTunnelID(t *testing.T) {
 		if stream.TunnelID() != "tun-xyz" {
 			t.Errorf("TunnelID = %q, want %q", stream.TunnelID(), "tun-xyz")
 		}
-		if stream.RemoteAddr() != "10.0.0.1:8080" {
-			t.Errorf("RemoteAddr = %q, want %q", stream.RemoteAddr(), "10.0.0.1:8080")
-		}
 		if stream.Protocol() != "tcp" {
 			t.Errorf("Protocol = %q, want %q", stream.Protocol(), "tcp")
 		}
@@ -2103,7 +1836,6 @@ func TestMuxControlFrameChannelFullThenClose(t *testing.T) {
 	}
 }
 
-
 func TestLastHeartbeat(t *testing.T) {
 	client, server := newTestPipe(t)
 	if !client.LastHeartbeat().IsZero() {
@@ -2136,4 +1868,53 @@ func TestLastHeartbeat(t *testing.T) {
 
 	client.Close()
 	server.Close()
+}
+
+// TestMuxLocalAddr tests the LocalAddr method.
+func TestMuxLocalAddr(t *testing.T) {
+	client, server := newTestPipe(t)
+
+	// LocalAddr should return the local address of the connection
+	if client.LocalAddr() == nil {
+		t.Error("LocalAddr should not be nil")
+	}
+	if server.LocalAddr() == nil {
+		t.Error("Server LocalAddr should not be nil")
+	}
+
+	// RemoteAddr should return the remote address of the connection
+	if client.RemoteAddr() == nil {
+		t.Error("RemoteAddr should not be nil")
+	}
+	if server.RemoteAddr() == nil {
+		t.Error("Server RemoteAddr should not be nil")
+	}
+
+	// The client's local should be the server's remote
+	if client.LocalAddr().String() != server.RemoteAddr().String() {
+		t.Errorf("Client LocalAddr %q should equal Server RemoteAddr %q",
+			client.LocalAddr().String(), server.RemoteAddr().String())
+	}
+
+	client.Close()
+	server.Close()
+}
+
+// TestMuxLocalAddrAfterClose tests that LocalAddr/RemoteAddr work after close.
+func TestMuxLocalAddrAfterClose(t *testing.T) {
+	client, _ := newTestPipe(t)
+
+	// Get addresses before closing
+	localAddr := client.LocalAddr()
+	remoteAddr := client.RemoteAddr()
+
+	client.Close()
+
+	// Addresses should still be accessible after close
+	if localAddr == nil {
+		t.Error("LocalAddr should not be nil after close")
+	}
+	if remoteAddr == nil {
+		t.Error("RemoteAddr should not be nil after close")
+	}
 }

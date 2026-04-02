@@ -7,10 +7,10 @@ import (
 
 // Limiter implements a token bucket rate limiter.
 type Limiter struct {
-	rate       float64       // tokens per second
-	burst      int           // maximum burst size
-	tokens     float64       // current tokens
-	lastUpdate time.Time     // last time tokens were updated
+	rate       float64   // tokens per second
+	burst      int       // maximum burst size
+	tokens     float64   // current tokens
+	lastUpdate time.Time // last time tokens were updated
 	mu         sync.Mutex
 }
 
@@ -192,7 +192,7 @@ func (m *Manager) Remove(key string) {
 
 // Clear removes all rate limiters.
 func (m *Manager) Clear() {
-	m.limiters.Range(func(key, value any) bool {
+	m.limiters.Range(func(key, _ any) bool {
 		m.limiters.Delete(key)
 		return true
 	})
@@ -212,77 +212,4 @@ func (m *Manager) Evict(maxAge time.Duration) int {
 		return true
 	})
 	return evicted
-}
-
-// SlidingWindow implements a sliding window rate limiter.
-type SlidingWindow struct {
-	windowSize time.Duration
-	maxEvents  int
-	events     []time.Time
-	mu         sync.Mutex
-}
-
-// NewSlidingWindow creates a new sliding window rate limiter.
-func NewSlidingWindow(windowSize time.Duration, maxEvents int) *SlidingWindow {
-	return &SlidingWindow{
-		windowSize: windowSize,
-		maxEvents:  maxEvents,
-		events:     make([]time.Time, 0, maxEvents),
-	}
-}
-
-// Allow checks if an event is allowed.
-func (s *SlidingWindow) Allow() bool {
-	return s.AllowAt(time.Now())
-}
-
-// AllowAt checks if an event at a specific time is allowed.
-func (s *SlidingWindow) AllowAt(now time.Time) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Remove old events
-	cutoff := now.Add(-s.windowSize)
-	validIdx := 0
-	for i, t := range s.events {
-		if t.After(cutoff) {
-			validIdx = i
-			break
-		}
-		validIdx = i + 1
-	}
-	n := copy(s.events, s.events[validIdx:])
-	s.events = s.events[:n]
-
-	// Check if we can add a new event
-	if len(s.events) >= s.maxEvents {
-		return false
-	}
-
-	s.events = append(s.events, now)
-	return true
-}
-
-// Count returns the number of events in the current window.
-func (s *SlidingWindow) Count() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := time.Now()
-	cutoff := now.Add(-s.windowSize)
-
-	count := 0
-	for _, t := range s.events {
-		if t.After(cutoff) {
-			count++
-		}
-	}
-	return count
-}
-
-// Reset clears all events.
-func (s *SlidingWindow) Reset() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.events = s.events[:0]
 }

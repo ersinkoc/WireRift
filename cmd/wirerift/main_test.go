@@ -1626,3 +1626,71 @@ func TestDoList_ReadBodyError_MockServer(t *testing.T) {
 		t.Logf("doList returned: %v", err)
 	}
 }
+
+// TestNormalizeArgsSeparator tests normalizeArgs with the -- separator.
+func TestNormalizeArgsSeparator(t *testing.T) {
+	// Test that -- separator works correctly
+	// Everything after -- should be treated as positional args
+	args := normalizeArgs([]string{"-v", "--", "-server", "value"})
+
+	// -v should be first (flag)
+	if len(args) < 1 || args[0] != "-v" {
+		t.Errorf("Expected -v to be first, got %v", args)
+	}
+
+	// After --, -server should be treated as positional (not a flag)
+	// So it should appear after all flags
+	foundPositional := false
+	for _, a := range args {
+		if a == "-server" {
+			foundPositional = true
+			break
+		}
+	}
+	if !foundPositional {
+		t.Errorf("Expected -server to be in positional args, got %v", args)
+	}
+}
+
+// TestNormalizeArgsTripleDash tests normalizeArgs with --- (should not convert).
+func TestNormalizeArgsTripleDash(t *testing.T) {
+	args := normalizeArgs([]string{"---server", "value"})
+
+	// ---server should NOT be converted to --server
+	found := false
+	for _, a := range args {
+		if a == "---server" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Expected ---server to remain unchanged, got %v", args)
+	}
+}
+
+// TestNormalizeArgsBoolFlags tests normalizeArgs with boolean flags.
+func TestNormalizeArgsBoolFlags(t *testing.T) {
+	// Test -inspect flag (should not consume next arg)
+	args := normalizeArgs([]string{"-inspect", "8080"})
+
+	// -inspect should be in flags, 8080 should be positional
+	if len(args) < 2 {
+		t.Fatalf("Expected at least 2 args, got %v", args)
+	}
+
+	// Find -inspect and verify 8080 comes after
+	foundInspect := false
+	for i, a := range args {
+		if a == "-inspect" {
+			foundInspect = true
+			// 8080 should be after -inspect in the result
+			if i+1 < len(args) && args[i+1] == "8080" {
+				// Good - 8080 is positional after -inspect
+			}
+			break
+		}
+	}
+	if !foundInspect {
+		t.Errorf("Expected -inspect in args, got %v", args)
+	}
+}

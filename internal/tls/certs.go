@@ -52,9 +52,9 @@ type Manager struct {
 	certs sync.Map // map[string]*tls.Certificate
 
 	// CA certificate for development
-	caCert    *x509.Certificate
-	caKey     *ecdsa.PrivateKey
-	caOnce    sync.Once
+	caCert *x509.Certificate
+	caKey  *ecdsa.PrivateKey
+	caOnce sync.Once
 
 	// ACME (Let's Encrypt)
 	acme *ACMEManager
@@ -287,11 +287,6 @@ func (m *Manager) TLSConfig() *tls.Config {
 			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
 		},
 	}
-}
-
-// WildcardDomain returns the wildcard domain for the base domain.
-func (m *Manager) WildcardDomain() string {
-	return "*." + m.config.Domain
 }
 
 // ACMEChallengeHandler returns the HTTP handler for ACME HTTP-01 challenges.

@@ -108,9 +108,9 @@ func TestTunnelRequestHTTP(t *testing.T) {
 
 func TestTunnelRequestTCP(t *testing.T) {
 	req := &TunnelRequest{
-		Type:      TunnelTypeTCP,
+		Type:       TunnelTypeTCP,
 		RemotePort: 0,
-		LocalAddr: "localhost:5432",
+		LocalAddr:  "localhost:5432",
 	}
 
 	frame, err := EncodeJSONPayload(FrameTunnelReq, ControlStreamID, req)
@@ -136,11 +136,11 @@ func TestAuthResponse(t *testing.T) {
 		{
 			name: "success",
 			resp: &AuthResponse{
-				OK:                 true,
-				SessionID:          "sess_abc123",
-				ServerVersion:      "1.0.0",
-				HeartbeatInterval:  30000,
-				MaxTunnels:         10,
+				OK:                  true,
+				SessionID:           "sess_abc123",
+				ServerVersion:       "1.0.0",
+				HeartbeatInterval:   30000,
+				MaxTunnels:          10,
 				MaxStreamsPerTunnel: 256,
 			},
 		},

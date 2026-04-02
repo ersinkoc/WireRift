@@ -128,62 +128,12 @@ func (m *Manager) ValidateToken(tokenSecret string) (*Token, *Account, error) {
 	return foundToken, foundAccount, nil
 }
 
-// CreateToken creates a new token.
-func (m *Manager) CreateToken(accountID, name string, expiresIn time.Duration) (*Token, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	account, ok := m.accounts.Load(accountID)
-	if !ok || !account.(*Account).Active {
-		return nil, ErrUnauthorized
-	}
-
-	token := &Token{
-		ID:        "tk_" + generateRandomString(16),
-		AccountID: accountID,
-		Name:      name,
-		CreatedAt: time.Now(),
-		ExpiresAt: time.Now().Add(expiresIn),
-		Secret:    "sk_" + generateRandomString(32),
-	}
-
-	m.tokens.Store(token.ID, token)
-	return token, nil
-}
-
 // DevToken returns the development token secret for testing.
 func (m *Manager) DevToken() string {
 	if m.devToken != nil {
 		return m.devToken.Secret
 	}
 	return ""
-}
-
-// RevokeToken revokes a token.
-func (m *Manager) RevokeToken(tokenID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.tokens.Delete(tokenID)
-	return nil
-}
-
-// CreateAccount creates a new account.
-func (m *Manager) CreateAccount(email, name string) (*Account, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	account := &Account{
-		ID:         "acc_" + generateRandomString(16),
-		Email:      email,
-		Name:       name,
-		Active:     true,
-		CreatedAt:  time.Now(),
-		MaxTunnels: 10,
-		RateLimit:  100,
-	}
-
-	m.accounts.Store(account.ID, account)
-	return account, nil
 }
 
 // Middleware returns an HTTP middleware for token authentication.

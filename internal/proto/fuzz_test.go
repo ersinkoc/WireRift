@@ -84,11 +84,11 @@ func FuzzDecodeJSONPayload(f *testing.F) {
 
 // FuzzReadMagic fuzzes the magic byte reader.
 func FuzzReadMagic(f *testing.F) {
-	f.Add([]byte{0x57, 0x52, 0x46, 0x01})         // valid
-	f.Add([]byte{0x57, 0x52, 0x46, 0x02})         // wrong version
-	f.Add([]byte{0x00, 0x00, 0x00, 0x00})         // zeros
-	f.Add([]byte{0x57, 0x52})                      // too short
-	f.Add([]byte{})                                 // empty
+	f.Add([]byte{0x57, 0x52, 0x46, 0x01}) // valid
+	f.Add([]byte{0x57, 0x52, 0x46, 0x02}) // wrong version
+	f.Add([]byte{0x00, 0x00, 0x00, 0x00}) // zeros
+	f.Add([]byte{0x57, 0x52})             // too short
+	f.Add([]byte{})                       // empty
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		ReadMagic(bytes.NewReader(data)) // Should not panic

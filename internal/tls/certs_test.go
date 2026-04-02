@@ -153,17 +153,6 @@ func TestTLSConfig(t *testing.T) {
 	}
 }
 
-func TestWildcardDomain(t *testing.T) {
-	m, _ := NewManager(Config{
-		Domain: "example.com",
-	})
-
-	expected := "*.example.com"
-	if m.WildcardDomain() != expected {
-		t.Errorf("WildcardDomain = %q, want %q", m.WildcardDomain(), expected)
-	}
-}
-
 // TestNewManagerDefaults tests NewManager with default values
 func TestNewManagerDefaults(t *testing.T) {
 	// Test with empty domain and cert dir
@@ -500,31 +489,6 @@ func TestSaveCertificateKeyFileError(t *testing.T) {
 	err = m.saveCertificate("test", []byte("cert-data"), []byte("key-data"))
 	if err == nil {
 		t.Error("Expected error saving key file when path is a directory")
-	}
-}
-
-// TestWildcardDomainVariations tests WildcardDomain with different inputs
-func TestWildcardDomainVariations(t *testing.T) {
-	tests := []struct {
-		domain   string
-		expected string
-	}{
-		{"example.com", "*.example.com"},
-		{"localhost", "*.localhost"},
-		{"", "*.localhost"}, // Empty domain defaults to localhost
-		{"sub.example.com", "*.sub.example.com"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.domain, func(t *testing.T) {
-			m, _ := NewManager(Config{
-				Domain: tt.domain,
-			})
-
-			if got := m.WildcardDomain(); got != tt.expected {
-				t.Errorf("WildcardDomain() = %q, want %q", got, tt.expected)
-			}
-		})
 	}
 }
 
@@ -1168,7 +1132,7 @@ func TestWriteFileAtomic_WriteError(t *testing.T) {
 	path := filepath.Join(dir, "write-err.txt")
 
 	writeErr := fmt.Errorf("simulated write error")
-	err := writeFileAtomic(path, func(f *os.File) error {
+	err := writeFileAtomic(path, func(_ *os.File) error {
 		return writeErr
 	})
 	if err == nil {
@@ -1186,7 +1150,7 @@ func TestWriteFileAtomic_OpenError(t *testing.T) {
 	blocker := filepath.Join(dir, "blocked")
 	os.MkdirAll(blocker, 0700)
 
-	err := writeFileAtomic(blocker, func(f *os.File) error {
+	err := writeFileAtomic(blocker, func(_ *os.File) error {
 		return nil
 	})
 	if err == nil {

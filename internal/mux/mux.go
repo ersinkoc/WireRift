@@ -13,7 +13,7 @@ import (
 
 // Errors returned by Mux operations.
 var (
-	ErrMuxClosed     = errors.New("multiplexer is closed")
+	ErrMuxClosed      = errors.New("multiplexer is closed")
 	ErrTooManyStreams = errors.New("too many active streams")
 )
 
@@ -30,9 +30,6 @@ type Config struct {
 
 	// HeartbeatInterval is the interval between heartbeats.
 	HeartbeatInterval time.Duration
-
-	// HeartbeatTimeout is the timeout for heartbeat responses.
-	HeartbeatTimeout time.Duration
 }
 
 // DefaultConfig returns the default configuration.
@@ -42,16 +39,15 @@ func DefaultConfig() Config {
 		WindowSize:        proto.DefaultWindowSize,
 		MaxFrameSize:      64 * 1024, // 64 KB
 		HeartbeatInterval: 30 * time.Second,
-		HeartbeatTimeout:  60 * time.Second,
 	}
 }
 
 // Mux is a stream multiplexer that carries multiple streams over a single connection.
 type Mux struct {
-	conn         net.Conn
-	frameWriter  *proto.FrameWriter
-	frameReader  *proto.FrameReader
-	config       Config
+	conn        net.Conn
+	frameWriter *proto.FrameWriter
+	frameReader *proto.FrameReader
+	config      Config
 
 	streams sync.Map // map[uint32]*Stream
 	nextID  atomic.Uint32
@@ -62,9 +58,6 @@ type Mux struct {
 	err       atomic.Value // error that caused shutdown
 
 	lastHeartbeat atomic.Int64 // unix nano of last heartbeat ack
-
-	// Server-side stream ID allocation (odd numbers)
-	serverStreamID atomic.Uint32
 
 	maxFrameSize int
 
@@ -93,7 +86,6 @@ func New(conn net.Conn, config Config) *Mux {
 		done:         make(chan struct{}),
 		maxFrameSize: config.MaxFrameSize,
 	}
-	m.serverStreamID.Store(1) // Server uses odd IDs
 	m.nextID.Store(2) // Start at 2 to avoid collision with ControlStreamID (0)
 
 	return m
@@ -425,9 +417,4 @@ func (m *Mux) getStream(id uint32) (*Stream, bool) {
 // removeStream removes a stream from the mux.
 func (m *Mux) removeStream(id uint32) {
 	m.streams.Delete(id)
-}
-
-// NextServerStreamID returns the next server-side stream ID.
-func (m *Mux) NextServerStreamID() uint32 {
-	return m.serverStreamID.Add(2)
 }

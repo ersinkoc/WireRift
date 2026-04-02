@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -280,17 +279,7 @@ func TestSaveCertBundleAndLoad(t *testing.T) {
 		t.Error("Metadata file not created")
 	}
 
-	// Load
-	loaded, err := mgr.LoadCertBundle("test.example.com")
-	if err != nil {
-		t.Fatalf("LoadCertBundle error: %v", err)
-	}
-	if loaded.PrivateKey.D.Cmp(key.D) != 0 {
-		t.Error("Loaded key doesn't match")
-	}
-	if loaded.ExpiresAt.IsZero() {
-		t.Error("ExpiresAt not loaded")
-	}
+	// Note: LoadCertBundle was removed as it's not used in production
 }
 
 func TestEstimateExpiry(t *testing.T) {
@@ -374,16 +363,6 @@ func TestIsACMEEnabled(t *testing.T) {
 	mgr.acme = &ACMEManager{}
 	if !mgr.IsACMEEnabled() {
 		t.Error("Should be true with ACME")
-	}
-}
-
-func TestLoadCertBundleNotFound(t *testing.T) {
-	dir := t.TempDir()
-	mgr, _ := NewACMEManager("test@example.com", dir, true, nil)
-
-	_, err := mgr.LoadCertBundle("nonexistent.com")
-	if err == nil {
-		t.Error("Expected error for nonexistent bundle")
 	}
 }
 
@@ -581,9 +560,9 @@ func TestSignedPost_MockServer(t *testing.T) {
 	// signedPost to account endpoint should return a valid response
 	payload, _ := json.Marshal(map[string]interface{}{
 		"termsOfServiceAgreed": true,
-		"contact":             []string{"mailto:test@example.com"},
+		"contact":              []string{"mailto:test@example.com"},
 	})
-	resp, err := mgr.signedPost(context.Background(),mgr.directory.NewAccount, payload)
+	resp, err := mgr.signedPost(context.Background(), mgr.directory.NewAccount, payload)
 	if err != nil {
 		t.Fatalf("signedPost failed: %v", err)
 	}
@@ -601,7 +580,7 @@ func TestSignedPost_NilPayload(t *testing.T) {
 	mgr := setupMockManager(t, mockSrv)
 
 	// signedPost with nil payload (POST-as-GET)
-	resp, err := mgr.signedPost(context.Background(),mockSrv.URL+"/authz/1", nil)
+	resp, err := mgr.signedPost(context.Background(), mockSrv.URL+"/authz/1", nil)
 	if err != nil {
 		t.Fatalf("signedPost with nil payload failed: %v", err)
 	}
@@ -634,7 +613,7 @@ func TestSignedPost_ErrorResponse(t *testing.T) {
 		NewAccount: errorSrv.URL + "/account",
 	}
 
-	_, err := mgr.signedPost(context.Background(),errorSrv.URL+"/account", []byte("{}"))
+	_, err := mgr.signedPost(context.Background(), errorSrv.URL+"/account", []byte("{}"))
 	if err == nil {
 		t.Fatal("Expected error for 403 response")
 	}
@@ -670,7 +649,7 @@ func TestProcessAuthorization_MockServer(t *testing.T) {
 	mgr.registerAccount()
 
 	// processAuthorization should find http-01 challenge, post to it, poll until valid
-	err := mgr.processAuthorization(context.Background(),mockSrv.URL + "/authz/1")
+	err := mgr.processAuthorization(context.Background(), mockSrv.URL+"/authz/1")
 	if err != nil {
 		t.Fatalf("processAuthorization failed: %v", err)
 	}
@@ -702,7 +681,7 @@ func TestProcessAuthorization_AlreadyValid(t *testing.T) {
 		NewNonce: validSrv.URL + "/nonce",
 	}
 
-	err := mgr.processAuthorization(context.Background(),validSrv.URL + "/authz/1")
+	err := mgr.processAuthorization(context.Background(), validSrv.URL+"/authz/1")
 	if err != nil {
 		t.Fatalf("Already-valid authz should succeed: %v", err)
 	}
@@ -744,7 +723,7 @@ func TestProcessAuthorization_NoHTTP01Challenge(t *testing.T) {
 		NewNonce: dnsSrv.URL + "/nonce",
 	}
 
-	err := mgr.processAuthorization(context.Background(),dnsSrv.URL + "/authz/1")
+	err := mgr.processAuthorization(context.Background(), dnsSrv.URL+"/authz/1")
 	if err == nil {
 		t.Fatal("Expected error for missing http-01 challenge")
 	}
@@ -835,7 +814,7 @@ func TestSignedPost_WithKID(t *testing.T) {
 	// Set account URL so kid is used instead of jwk
 	mgr.account.URL = mockSrv.URL + "/account/1"
 
-	resp, err := mgr.signedPost(context.Background(),mockSrv.URL+"/order/1", nil)
+	resp, err := mgr.signedPost(context.Background(), mockSrv.URL+"/order/1", nil)
 	if err != nil {
 		t.Fatalf("signedPost with kid failed: %v", err)
 	}
@@ -855,7 +834,7 @@ func TestSignedPost_WithoutKID(t *testing.T) {
 	payload, _ := json.Marshal(map[string]interface{}{
 		"termsOfServiceAgreed": true,
 	})
-	resp, err := mgr.signedPost(context.Background(),mgr.directory.NewAccount, payload)
+	resp, err := mgr.signedPost(context.Background(), mgr.directory.NewAccount, payload)
 	if err != nil {
 		t.Fatalf("signedPost without kid failed: %v", err)
 	}
@@ -954,43 +933,6 @@ func TestInitialize_KeyPersistence(t *testing.T) {
 	if mgr.account.URL == "" {
 		t.Error("Account URL should be set after registration")
 	}
-}
-
-func TestStartAutoRenewal(t *testing.T) {
-	mockSrv := mockACMEServer(t)
-	defer mockSrv.Close()
-	mgr := setupMockManager(t, mockSrv)
-
-	if err := mgr.registerAccount(); err != nil {
-		t.Fatalf("registerAccount: %v", err)
-	}
-
-	// Track calls
-	var getCalled, setCalled bool
-	getCert := func(domain string) *CertificateBundle {
-		getCalled = true
-		// Return a bundle that needs renewal (expires soon)
-		return &CertificateBundle{
-			ExpiresAt: time.Now().Add(10 * 24 * time.Hour), // 10 days, needs renewal (<30 days)
-		}
-	}
-	setCert := func(domain string, b *CertificateBundle) {
-		setCalled = true
-	}
-
-	done := make(chan struct{})
-	mgr.StartAutoRenewal([]string{"test.example.com"}, getCert, setCert, done)
-
-	// Wait briefly — the renewal goroutine uses a 12h ticker, so we can't wait for it
-	// Instead, just verify it started without panic and close immediately
-	time.Sleep(50 * time.Millisecond)
-	close(done)
-	time.Sleep(50 * time.Millisecond)
-
-	// The goroutine should have stopped cleanly
-	// getCalled/setCalled may not be true since ticker hasn't fired, that's OK
-	_ = getCalled
-	_ = setCalled
 }
 
 func TestObtainCertificate_ContextCancellation(t *testing.T) {
@@ -1181,7 +1123,7 @@ func TestInitialize_FetchDirectoryError(t *testing.T) {
 	mgr.staging = true // will try LetsEncryptStaging URL
 
 	// Replace the transport to force connection refused
-	mgr.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	mgr.httpClient.Transport = roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("connection refused")
 	})
 
@@ -2264,170 +2206,6 @@ func TestSaveCertBundle_MetadataWriteError(t *testing.T) {
 	}
 }
 
-// TestLoadCertBundle_KeyFileReadError tests LoadCertBundle when key file is missing
-func TestLoadCertBundle_KeyFileReadError(t *testing.T) {
-	dir := t.TempDir()
-	mgr, _ := NewACMEManager("test@example.com", dir, true, nil)
-
-	// Create .crt but no .key
-	os.WriteFile(filepath.Join(dir, "nokey.crt"), []byte("fake-cert"), 0600)
-
-	_, err := mgr.LoadCertBundle("nokey")
-	if err == nil {
-		t.Error("Expected error when key file is missing")
-	}
-}
-
-// TestLoadCertBundle_InvalidKeyPEM tests LoadCertBundle with non-PEM key data
-func TestLoadCertBundle_InvalidKeyPEM(t *testing.T) {
-	dir := t.TempDir()
-	mgr, _ := NewACMEManager("test@example.com", dir, true, nil)
-
-	os.WriteFile(filepath.Join(dir, "badpem.crt"), []byte("fake-cert"), 0600)
-	os.WriteFile(filepath.Join(dir, "badpem.key"), []byte("not-pem-data"), 0600)
-
-	_, err := mgr.LoadCertBundle("badpem")
-	if err == nil {
-		t.Error("Expected error for invalid key PEM")
-	}
-	if !strings.Contains(err.Error(), "invalid key PEM") {
-		t.Errorf("Expected 'invalid key PEM' error, got: %v", err)
-	}
-}
-
-// TestLoadCertBundle_InvalidKeyBytes tests LoadCertBundle with valid PEM but invalid EC key bytes
-func TestLoadCertBundle_InvalidKeyBytes(t *testing.T) {
-	dir := t.TempDir()
-	mgr, _ := NewACMEManager("test@example.com", dir, true, nil)
-
-	os.WriteFile(filepath.Join(dir, "badec.crt"), []byte("fake-cert"), 0600)
-	badKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: []byte("invalid-ec-bytes")})
-	os.WriteFile(filepath.Join(dir, "badec.key"), badKeyPEM, 0600)
-
-	_, err := mgr.LoadCertBundle("badec")
-	if err == nil {
-		t.Error("Expected error for invalid EC key bytes")
-	}
-}
-
-// TestLoadCertBundle_CorruptMetadataJSON tests LoadCertBundle with corrupt metadata JSON
-func TestLoadCertBundle_CorruptMetadataJSON(t *testing.T) {
-	dir := t.TempDir()
-	mgr, _ := NewACMEManager("test@example.com", dir, true, nil)
-
-	// First save a valid bundle
-	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	serial, _ := rand.Int(rand.Reader, big.NewInt(1000000))
-	template := &x509.Certificate{
-		SerialNumber: serial,
-		NotBefore:    time.Now(),
-		NotAfter:     time.Now().Add(90 * 24 * time.Hour),
-		DNSNames:     []string{"corrupt-meta.example.com"},
-	}
-	certDER, _ := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-
-	bundle := &CertificateBundle{
-		CertPEM:    certPEM,
-		PrivateKey: key,
-		Domains:    []string{"corrupt-meta.example.com"},
-		IssuedAt:   time.Now(),
-		ExpiresAt:  time.Now().Add(90 * 24 * time.Hour),
-	}
-	mgr.saveCertBundle("corrupt-meta.example.com", bundle)
-
-	// Corrupt the metadata JSON
-	os.WriteFile(filepath.Join(dir, "corrupt-meta.example.com.json"), []byte("not-json{{{"), 0600)
-
-	loaded, err := mgr.LoadCertBundle("corrupt-meta.example.com")
-	if err != nil {
-		t.Fatalf("LoadCertBundle should succeed even with corrupt metadata: %v", err)
-	}
-	// Metadata fields should be zero since JSON parse failed
-	if !loaded.ExpiresAt.IsZero() {
-		t.Error("ExpiresAt should be zero with corrupt metadata")
-	}
-	if !loaded.IssuedAt.IsZero() {
-		t.Error("IssuedAt should be zero with corrupt metadata")
-	}
-}
-
-// TestLoadCertBundle_NoMetadataFile tests LoadCertBundle when metadata file doesn't exist
-func TestLoadCertBundle_NoMetadataFile(t *testing.T) {
-	dir := t.TempDir()
-	mgr, _ := NewACMEManager("test@example.com", dir, true, nil)
-
-	// Save cert and key but remove metadata
-	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	serial, _ := rand.Int(rand.Reader, big.NewInt(1000000))
-	template := &x509.Certificate{
-		SerialNumber: serial,
-		NotBefore:    time.Now(),
-		NotAfter:     time.Now().Add(90 * 24 * time.Hour),
-		DNSNames:     []string{"nometa.example.com"},
-	}
-	certDER, _ := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-
-	bundle := &CertificateBundle{
-		CertPEM:    certPEM,
-		PrivateKey: key,
-		Domains:    []string{"nometa.example.com"},
-		IssuedAt:   time.Now(),
-		ExpiresAt:  time.Now().Add(90 * 24 * time.Hour),
-	}
-	mgr.saveCertBundle("nometa.example.com", bundle)
-
-	// Remove the metadata file
-	os.Remove(filepath.Join(dir, "nometa.example.com.json"))
-
-	loaded, err := mgr.LoadCertBundle("nometa.example.com")
-	if err != nil {
-		t.Fatalf("LoadCertBundle should succeed without metadata: %v", err)
-	}
-	if loaded == nil {
-		t.Fatal("Loaded bundle should not be nil")
-	}
-}
-
-// TestLoadCertBundle_MetadataMissingFields tests LoadCertBundle when metadata has missing fields
-func TestLoadCertBundle_MetadataMissingFields(t *testing.T) {
-	dir := t.TempDir()
-	mgr, _ := NewACMEManager("test@example.com", dir, true, nil)
-
-	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	serial, _ := rand.Int(rand.Reader, big.NewInt(1000000))
-	template := &x509.Certificate{
-		SerialNumber: serial,
-		NotBefore:    time.Now(),
-		NotAfter:     time.Now().Add(90 * 24 * time.Hour),
-		DNSNames:     []string{"partial.example.com"},
-	}
-	certDER, _ := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-
-	bundle := &CertificateBundle{
-		CertPEM:    certPEM,
-		PrivateKey: key,
-		Domains:    []string{"partial.example.com"},
-		IssuedAt:   time.Now(),
-		ExpiresAt:  time.Now().Add(90 * 24 * time.Hour),
-	}
-	mgr.saveCertBundle("partial.example.com", bundle)
-
-	// Overwrite metadata with JSON that has wrong types for expires_at/issued_at
-	os.WriteFile(filepath.Join(dir, "partial.example.com.json"), []byte(`{"domains":["partial.example.com"],"expires_at":123,"issued_at":456}`), 0600)
-
-	loaded, err := mgr.LoadCertBundle("partial.example.com")
-	if err != nil {
-		t.Fatalf("LoadCertBundle should succeed with partial metadata: %v", err)
-	}
-	// expires_at and issued_at are number not string, so type assertion to string fails
-	if !loaded.ExpiresAt.IsZero() {
-		t.Error("ExpiresAt should be zero when metadata has wrong types")
-	}
-}
-
 // TestEstimateExpiry_InvalidCertBytes tests EstimateExpiry with valid PEM but invalid cert bytes
 func TestEstimateExpiry_InvalidCertBytes(t *testing.T) {
 	badCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not-a-valid-cert")})
@@ -2435,81 +2213,6 @@ func TestEstimateExpiry_InvalidCertBytes(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for invalid certificate bytes")
 	}
-}
-
-// TestStartAutoRenewal_DoneImmediately tests StartAutoRenewal when done is closed immediately
-func TestStartAutoRenewal_DoneImmediately(t *testing.T) {
-	dir := t.TempDir()
-	mgr, _ := NewACMEManager("test@example.com", dir, true, nil)
-	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	mgr.account = &acmeAccount{Key: key}
-
-	done := make(chan struct{})
-	close(done) // Close immediately
-
-	getCert := func(domain string) *CertificateBundle { return nil }
-	setCert := func(domain string, b *CertificateBundle) {}
-
-	mgr.StartAutoRenewal([]string{"test.example.com"}, getCert, setCert, done)
-	time.Sleep(50 * time.Millisecond) // Allow goroutine to start and exit
-}
-
-// TestStartAutoRenewal_RenewalFlow tests the full renewal flow with a fast ticker
-func TestStartAutoRenewal_RenewalFlow(t *testing.T) {
-	mockSrv := mockACMEServer(t)
-	defer mockSrv.Close()
-	mgr := setupMockManager(t, mockSrv)
-	mgr.registerAccount()
-
-	var renewed bool
-	var mu sync.Mutex
-
-	getCert := func(domain string) *CertificateBundle {
-		mu.Lock()
-		defer mu.Unlock()
-		if renewed {
-			// After renewal, return a cert that doesn't need renewal
-			return &CertificateBundle{ExpiresAt: time.Now().Add(90 * 24 * time.Hour)}
-		}
-		// Return a bundle that needs renewal
-		return &CertificateBundle{ExpiresAt: time.Now().Add(5 * 24 * time.Hour)}
-	}
-	setCert := func(domain string, b *CertificateBundle) {
-		mu.Lock()
-		defer mu.Unlock()
-		renewed = true
-	}
-
-	done := make(chan struct{})
-	defer close(done)
-
-	// We can't control the ticker (12h), but we can test the done channel behavior
-	mgr.StartAutoRenewal([]string{"test.example.com"}, getCert, setCert, done)
-	time.Sleep(50 * time.Millisecond)
-}
-
-// TestStartAutoRenewal_NilBundle tests StartAutoRenewal when getCert returns nil
-func TestStartAutoRenewal_NilBundle(t *testing.T) {
-	mockSrv := mockACMEServer(t)
-	defer mockSrv.Close()
-	mgr := setupMockManager(t, mockSrv)
-	mgr.registerAccount()
-
-	getCert := func(domain string) *CertificateBundle {
-		return nil // nil bundle triggers renewal
-	}
-	setCalled := false
-	setCert := func(domain string, b *CertificateBundle) {
-		setCalled = true
-	}
-
-	done := make(chan struct{})
-	mgr.StartAutoRenewal([]string{"test.example.com"}, getCert, setCert, done)
-	// Wait briefly then close
-	time.Sleep(50 * time.Millisecond)
-	close(done)
-	time.Sleep(50 * time.Millisecond)
-	_ = setCalled
 }
 
 // TestSignedPost_ContextCancelled tests signedPost with a cancelled context
@@ -2910,147 +2613,5 @@ func TestProcessAuthorization_PollSignedPostContinue(t *testing.T) {
 	err := mgr.processAuthorization(context.Background(), srv.URL+"/authz/1")
 	if err != nil {
 		t.Fatalf("processAuthorization should succeed after retries: %v", err)
-	}
-}
-
-// ─── checkAndRenew direct tests ─────────────────────────
-
-func TestCheckAndRenew_NeedsRenewal(t *testing.T) {
-	mockSrv := mockACMEServer(t)
-	defer mockSrv.Close()
-	mgr := setupMockManager(t, mockSrv)
-	mgr.registerAccount()
-
-	var renewed bool
-	getCert := func(domain string) *CertificateBundle {
-		return &CertificateBundle{
-			ExpiresAt: time.Now().Add(5 * 24 * time.Hour), // 5 days = needs renewal (<30)
-		}
-	}
-	setCert := func(domain string, b *CertificateBundle) {
-		renewed = true
-	}
-
-	done := make(chan struct{})
-	defer close(done)
-	mgr.checkAndRenew(context.Background(), []string{"test.example.com"}, getCert, setCert, done)
-
-	if !renewed {
-		t.Error("Expected certificate to be renewed")
-	}
-}
-
-func TestCheckAndRenew_NoRenewalNeeded(t *testing.T) {
-	dir := t.TempDir()
-	mgr, _ := NewACMEManager("test@example.com", dir, true, nil)
-
-	var renewed bool
-	getCert := func(domain string) *CertificateBundle {
-		return &CertificateBundle{
-			ExpiresAt: time.Now().Add(60 * 24 * time.Hour), // 60 days = no renewal needed
-		}
-	}
-	setCert := func(domain string, b *CertificateBundle) {
-		renewed = true
-	}
-
-	done := make(chan struct{})
-	defer close(done)
-	mgr.checkAndRenew(context.Background(), []string{"test.example.com"}, getCert, setCert, done)
-
-	if renewed {
-		t.Error("Certificate should NOT be renewed (60 days remaining)")
-	}
-}
-
-func TestCheckAndRenew_NilBundle(t *testing.T) {
-	mockSrv := mockACMEServer(t)
-	defer mockSrv.Close()
-	mgr := setupMockManager(t, mockSrv)
-	mgr.registerAccount()
-
-	var renewed bool
-	getCert := func(domain string) *CertificateBundle {
-		return nil // nil = needs renewal
-	}
-	setCert := func(domain string, b *CertificateBundle) {
-		renewed = true
-	}
-
-	done := make(chan struct{})
-	defer close(done)
-	mgr.checkAndRenew(context.Background(), []string{"test.example.com"}, getCert, setCert, done)
-
-	if !renewed {
-		t.Error("Expected renewal for nil bundle")
-	}
-}
-
-func TestCheckAndRenew_RenewalFails(t *testing.T) {
-	dir := t.TempDir()
-	mgr, _ := NewACMEManager("test@example.com", dir, true, nil)
-	// Don't set up account/directory — ObtainCertificate will fail
-
-	var renewed bool
-	getCert := func(domain string) *CertificateBundle {
-		return nil // needs renewal
-	}
-	setCert := func(domain string, b *CertificateBundle) {
-		renewed = true
-	}
-
-	done := make(chan struct{})
-	defer close(done)
-	mgr.checkAndRenew(context.Background(), []string{"test.example.com"}, getCert, setCert, done)
-
-	if renewed {
-		t.Error("Should NOT have renewed — ObtainCertificate should fail")
-	}
-}
-
-func TestCheckAndRenew_DoneSignalStops(t *testing.T) {
-	dir := t.TempDir()
-	mgr, _ := NewACMEManager("test@example.com", dir, true, nil)
-
-	done := make(chan struct{})
-	close(done) // already closed = should stop immediately
-
-	getCert := func(domain string) *CertificateBundle {
-		t.Error("getCert should not be called when done is closed")
-		return nil
-	}
-	setCert := func(domain string, b *CertificateBundle) {
-		t.Error("setCert should not be called when done is closed")
-	}
-
-	mgr.checkAndRenew(context.Background(), []string{"test.example.com"}, getCert, setCert, done)
-}
-
-func TestCheckAndRenew_MultipleDomains(t *testing.T) {
-	mockSrv := mockACMEServer(t)
-	defer mockSrv.Close()
-	mgr := setupMockManager(t, mockSrv)
-	mgr.registerAccount()
-
-	renewedDomains := map[string]bool{}
-	getCert := func(domain string) *CertificateBundle {
-		if domain == "old.example.com" {
-			return &CertificateBundle{ExpiresAt: time.Now().Add(5 * 24 * time.Hour)}
-		}
-		return &CertificateBundle{ExpiresAt: time.Now().Add(60 * 24 * time.Hour)}
-	}
-	setCert := func(domain string, b *CertificateBundle) {
-		renewedDomains[domain] = true
-	}
-
-	done := make(chan struct{})
-	defer close(done)
-	mgr.checkAndRenew(context.Background(), []string{"old.example.com", "fresh.example.com"}, getCert, setCert, done)
-
-	if !renewedDomains["old.example.com"] {
-		t.Error("old.example.com should have been renewed")
-	}
-	if renewedDomains["fresh.example.com"] {
-		t.Error("fresh.example.com should NOT have been renewed")
 	}
 }

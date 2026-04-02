@@ -3,7 +3,6 @@ package mux
 import (
 	"errors"
 	"io"
-	"net"
 	"sync"
 	"sync/atomic"
 )
@@ -26,13 +25,13 @@ var (
 // Stream represents a single bidirectional stream within a multiplexed connection.
 // Stream implements io.ReadWriteCloser.
 type Stream struct {
-	id       uint32
-	mux      *Mux
-	readBuf  *ringBuffer
-	readCh   chan struct{} // signals new data available
-	window   atomic.Int32  // send window remaining
-	windowCh chan struct{} // signals window update
-	state    atomic.Int32
+	id        uint32
+	mux       *Mux
+	readBuf   *ringBuffer
+	readCh    chan struct{} // signals new data available
+	window    atomic.Int32  // send window remaining
+	windowCh  chan struct{} // signals window update
+	state     atomic.Int32
 	closeOnce sync.Once
 
 	// Metadata (protected by metaMu)
@@ -40,9 +39,6 @@ type Stream struct {
 	remoteAddr string
 	protocol   string
 	tunnelID   string
-
-	// Callbacks
-	onClose func()
 }
 
 // newStream creates a new stream.
@@ -63,26 +59,11 @@ func (s *Stream) ID() uint32 {
 	return s.id
 }
 
-// RemoteAddr returns the remote address of the connection.
-func (s *Stream) RemoteAddr() string {
-	s.metaMu.RLock()
-	defer s.metaMu.RUnlock()
-	return s.remoteAddr
-}
-
 // Protocol returns the protocol (http, tcp, etc.).
 func (s *Stream) Protocol() string {
 	s.metaMu.RLock()
 	defer s.metaMu.RUnlock()
 	return s.protocol
-}
-
-// LocalAddr returns the local address (delegates to mux).
-func (s *Stream) LocalAddr() net.Addr {
-	if s.mux != nil {
-		return s.mux.LocalAddr()
-	}
-	return nil
 }
 
 // TunnelID returns the tunnel ID associated with this stream.
@@ -212,17 +193,6 @@ func (s *Stream) Close() error {
 	return err
 }
 
-// CloseRead closes the read side of the stream.
-func (s *Stream) CloseRead() error {
-	state := s.state.Load()
-	if state == streamStateActive {
-		s.state.CompareAndSwap(streamStateActive, streamStateHalfClosedRemote)
-	} else if state == streamStateHalfClosedLocal {
-		s.state.CompareAndSwap(streamStateHalfClosedLocal, streamStateClosed)
-	}
-	return nil
-}
-
 // Reset immediately aborts the stream.
 func (s *Stream) Reset() error {
 	s.state.Store(streamStateReset)
@@ -241,9 +211,6 @@ func (s *Stream) Reset() error {
 
 // cleanup releases resources.
 func (s *Stream) cleanup() {
-	if s.onClose != nil {
-		s.onClose()
-	}
 	s.mux.removeStream(s.id)
 }
 

@@ -36,7 +36,6 @@ const (
 var (
 	ErrACMEChallengeFailed = errors.New("ACME challenge failed")
 	ErrACMEOrderFailed     = errors.New("ACME order failed")
-	ErrACMERateLimited     = errors.New("ACME rate limited")
 )
 
 // acmeDirectory holds ACME server endpoint URLs.
@@ -73,9 +72,9 @@ type acmeIdentifier struct {
 }
 
 type acmeChallenge struct {
-	Type  string `json:"type"`
-	URL   string `json:"url"`
-	Token string `json:"token"`
+	Type   string `json:"type"`
+	URL    string `json:"url"`
+	Token  string `json:"token"`
 	Status string `json:"status"`
 }
 
@@ -515,7 +514,7 @@ func (m *ACMEManager) registerAccount() error {
 	ctx := context.Background()
 	payload := map[string]interface{}{
 		"termsOfServiceAgreed": true,
-		"contact":             []string{"mailto:" + m.email},
+		"contact":              []string{"mailto:" + m.email},
 	}
 	body, _ := json.Marshal(payload)
 
@@ -614,54 +613,6 @@ func (m *ACMEManager) saveCertBundle(domain string, bundle *CertificateBundle) e
 	return nil
 }
 
-// LoadCertBundle loads a certificate bundle from disk.
-func (m *ACMEManager) LoadCertBundle(domain string) (*CertificateBundle, error) {
-	certPath := filepath.Join(m.certDir, domain+".crt")
-	keyPath := filepath.Join(m.certDir, domain+".key")
-	metaPath := filepath.Join(m.certDir, domain+".json")
-
-	certPEM, err := os.ReadFile(certPath)
-	if err != nil {
-		return nil, err
-	}
-
-	keyPEM, err := os.ReadFile(keyPath)
-	if err != nil {
-		return nil, err
-	}
-
-	block, _ := pem.Decode(keyPEM)
-	if block == nil {
-		return nil, fmt.Errorf("invalid key PEM")
-	}
-	key, err := x509.ParseECPrivateKey(block.Bytes)
-	if err != nil {
-		return nil, err
-	}
-
-	bundle := &CertificateBundle{
-		CertPEM:    certPEM,
-		PrivateKey: key,
-		Domains:    []string{domain},
-	}
-
-	// Load metadata if available
-	metaData, err := os.ReadFile(metaPath)
-	if err == nil {
-		var meta map[string]interface{}
-		if json.Unmarshal(metaData, &meta) == nil {
-			if exp, ok := meta["expires_at"].(string); ok {
-				bundle.ExpiresAt, _ = time.Parse(time.RFC3339, exp)
-			}
-			if iss, ok := meta["issued_at"].(string); ok {
-				bundle.IssuedAt, _ = time.Parse(time.RFC3339, iss)
-			}
-		}
-	}
-
-	return bundle, nil
-}
-
 // ─── Helpers ────────────────────────────────────────────
 
 func base64URLEncode(data []byte) string {
@@ -677,62 +628,6 @@ func padTo32(b []byte) []byte {
 	return padded
 }
 
-// ─── Auto-Renewal ───────────────────────────────────────
-
-// StartAutoRenewal starts a background goroutine that checks certificate
-// expiry and renews when needed (30 days before expiry).
-func (m *ACMEManager) StartAutoRenewal(domains []string, getCert func(string) *CertificateBundle, setCert func(string, *CertificateBundle), done <-chan struct{}) {
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				m.logger.Error("panic in auto-renewal", "error", r)
-			}
-		}()
-
-		ticker := time.NewTicker(12 * time.Hour)
-		defer ticker.Stop()
-
-		ctx, cancel := context.WithCancel(context.Background())
-		go func() {
-			<-done
-			cancel()
-		}()
-
-		for {
-			select {
-			case <-done:
-				return
-			case <-ticker.C:
-				m.checkAndRenew(ctx, domains, getCert, setCert, done)
-			}
-		}
-	}()
-}
-
-// checkAndRenew iterates through domains and renews certificates that are expiring soon.
-func (m *ACMEManager) checkAndRenew(ctx context.Context, domains []string, getCert func(string) *CertificateBundle, setCert func(string, *CertificateBundle), done <-chan struct{}) {
-	for _, domain := range domains {
-		// Check if we should stop before starting expensive renewal
-		select {
-		case <-done:
-			return
-		default:
-		}
-
-		bundle := getCert(domain)
-		if bundle == nil || bundle.NeedsRenewal() {
-			m.logger.Info("renewing certificate", "domain", domain)
-			newBundle, err := m.ObtainCertificate(ctx, []string{domain})
-			if err != nil {
-				m.logger.Error("renewal failed", "domain", domain, "error", err)
-				continue
-			}
-			setCert(domain, newBundle)
-			m.logger.Info("certificate renewed", "domain", domain, "expires", newBundle.ExpiresAt)
-		}
-	}
-}
-
 // EstimateExpiry parses the first certificate in PEM and returns NotAfter.
 func EstimateExpiry(certPEM []byte) (time.Time, error) {
 	block, _ := pem.Decode(certPEM)
@@ -745,4 +640,3 @@ func EstimateExpiry(certPEM []byte) (time.Time, error) {
 	}
 	return cert.NotAfter, nil
 }
-

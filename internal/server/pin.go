@@ -85,7 +85,7 @@ func (s *Server) checkPIN(w http.ResponseWriter, r *http.Request, pin, subdomain
 }
 
 // servePINPage serves the PIN entry HTML page.
-func (s *Server) servePINPage(w http.ResponseWriter, subdomain string, showError bool) {
+func (s *Server) servePINPage(w http.ResponseWriter, _ string, showError bool) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusUnauthorized)

@@ -17,13 +17,13 @@ type AuthRequest struct {
 
 // AuthResponse is sent by the server after authentication.
 type AuthResponse struct {
-	OK                 bool   `json:"ok"`
-	SessionID          string `json:"session_id,omitempty"`
-	ServerVersion      string `json:"server_version,omitempty"`
-	HeartbeatInterval  int    `json:"heartbeat_interval_ms,omitempty"`
-	MaxTunnels         int    `json:"max_tunnels,omitempty"`
-	MaxStreamsPerTunnel int   `json:"max_streams_per_tunnel,omitempty"`
-	Error              string `json:"error,omitempty"`
+	OK                  bool   `json:"ok"`
+	SessionID           string `json:"session_id,omitempty"`
+	ServerVersion       string `json:"server_version,omitempty"`
+	HeartbeatInterval   int    `json:"heartbeat_interval_ms,omitempty"`
+	MaxTunnels          int    `json:"max_tunnels,omitempty"`
+	MaxStreamsPerTunnel int    `json:"max_streams_per_tunnel,omitempty"`
+	Error               string `json:"error,omitempty"`
 }
 
 // TunnelType represents the type of tunnel.
@@ -84,9 +84,9 @@ type StreamWindow struct {
 
 // GoAway is sent to signal graceful shutdown.
 type GoAway struct {
-	Reason          string `json:"reason"`
-	Message         string `json:"message,omitempty"`
-	ReconnectAfter  int    `json:"reconnect_after_ms,omitempty"`
+	Reason         string `json:"reason"`
+	Message        string `json:"message,omitempty"`
+	ReconnectAfter int    `json:"reconnect_after_ms,omitempty"`
 }
 
 // ErrorFrame represents a protocol-level error.

@@ -96,20 +96,6 @@ func TestRingBufferEmpty(t *testing.T) {
 	}
 }
 
-func TestRingBufferReset(t *testing.T) {
-	rb := newRingBuffer(1024)
-
-	rb.Write([]byte("hello"))
-	if rb.Len() != 5 {
-		t.Errorf("Len = %d, want 5", rb.Len())
-	}
-
-	rb.Reset()
-	if rb.Len() != 0 {
-		t.Errorf("After Reset, Len = %d, want 0", rb.Len())
-	}
-}
-
 func TestRingBufferPartialRead(t *testing.T) {
 	rb := newRingBuffer(1024)
 
@@ -186,44 +172,6 @@ func BenchmarkRingBufferRead(b *testing.B) {
 	}
 }
 
-// TestRingBufferAvailable tests the Available method
-func TestRingBufferAvailable(t *testing.T) {
-	rb := newRingBuffer(100)
-
-	// Empty buffer should have full capacity available
-	avail := rb.Available()
-	if avail != 100 {
-		t.Errorf("Available on empty buffer = %d, want 100", avail)
-	}
-
-	// Write some data
-	rb.Write([]byte("hello"))
-	avail = rb.Available()
-	if avail != 95 {
-		t.Errorf("Available after write = %d, want 95", avail)
-	}
-
-	// Read some data
-	p := make([]byte, 3)
-	rb.Read(p)
-	avail = rb.Available()
-	if avail != 98 {
-		t.Errorf("Available after read = %d, want 98", avail)
-	}
-}
-
-// TestRingBufferAvailableFull tests Available when buffer is full
-func TestRingBufferAvailableFull(t *testing.T) {
-	rb := newRingBuffer(5)
-	rb.Write([]byte("hello"))
-
-	// Full buffer should have 0 available
-	avail := rb.Available()
-	if avail != 0 {
-		t.Errorf("Available on full buffer = %d, want 0", avail)
-	}
-}
-
 // TestRingBufferNewWithZeroSize tests newRingBuffer with size <= 0
 func TestRingBufferNewWithZeroSize(t *testing.T) {
 	rb := newRingBuffer(0)
@@ -290,3 +238,68 @@ func TestRingBufferWriteAtMaxSize(t *testing.T) {
 	}
 }
 
+// TestRingBufferReset tests the Reset method.
+func TestRingBufferReset(t *testing.T) {
+	rb := newRingBuffer(1024)
+
+	// Write some data
+	data := []byte("hello world")
+	rb.Write(data)
+
+	// Verify data is there by reading
+	p := make([]byte, len(data))
+	n, _ := rb.Read(p)
+	if n != len(data) {
+		t.Errorf("Read returned %d, want %d", n, len(data))
+	}
+
+	// Write more data
+	rb.Write([]byte("more data"))
+
+	// Reset the buffer
+	rb.Reset()
+
+	// After reset, read should return 0 (buffer is empty)
+	p2 := make([]byte, 100)
+	n2, _ := rb.Read(p2)
+	if n2 != 0 {
+		t.Errorf("Read after reset returned %d, want 0", n2)
+	}
+
+	// Write after reset should work normally
+	rb.Write([]byte("after reset"))
+	n3, _ := rb.Read(p2)
+	if n3 != 11 {
+		t.Errorf("Read after write post-reset returned %d, want 11", n3)
+	}
+}
+
+// TestRingBufferLenLockedFull tests lenLocked when buffer is full.
+func TestRingBufferLenLockedFull(t *testing.T) {
+	rb := newRingBuffer(8)
+
+	// Fill the buffer completely
+	data := []byte("ABCDEFGH")
+	rb.Write(data)
+
+	// The buffer should be full now
+	rb.mu.Lock()
+	length := rb.lenLocked()
+	rb.mu.Unlock()
+
+	if length != 8 {
+		t.Errorf("lenLocked on full buffer = %d, want 8", length)
+	}
+
+	// Read some data to make it not full
+	p := make([]byte, 4)
+	rb.Read(p)
+
+	rb.mu.Lock()
+	length = rb.lenLocked()
+	rb.mu.Unlock()
+
+	if length != 4 {
+		t.Errorf("lenLocked after partial read = %d, want 4", length)
+	}
+}

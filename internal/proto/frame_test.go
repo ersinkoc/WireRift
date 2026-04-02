@@ -38,9 +38,9 @@ func TestFrameTypeString(t *testing.T) {
 
 func TestFrameEncodeDecode(t *testing.T) {
 	tests := []struct {
-		name     string
-		frame    *Frame
-		wantErr  bool
+		name    string
+		frame   *Frame
+		wantErr bool
 	}{
 		{
 			name: "empty payload",

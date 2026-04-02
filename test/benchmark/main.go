@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -428,7 +427,5 @@ func percentile(ds []time.Duration, pct int) time.Duration {
 
 func init() {
 	// Suppress server logs during benchmark
-	if os.Getenv("WIRERIFT_BENCH_VERBOSE") == "" {
-		// Logs go to stderr, benchmark output to stdout
-	}
+	// Logs go to stderr, benchmark output to stdout
 }

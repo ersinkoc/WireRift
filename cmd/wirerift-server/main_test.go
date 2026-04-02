@@ -545,3 +545,266 @@ func TestRun_ACMEEmailStaging(t *testing.T) {
 		t.Fatal("timeout")
 	}
 }
+
+// TestNormalizeArgsSeparator tests normalizeArgs with the -- separator.
+func TestNormalizeArgsSeparator(t *testing.T) {
+	// Test that -- separator works correctly
+	// Everything after -- should be treated as positional args
+	args := normalizeArgs([]string{"-v", "--", "-token", "value"})
+
+	// -v should be first (flag)
+	if len(args) < 1 || args[0] != "-v" {
+		t.Errorf("Expected -v to be first, got %v", args)
+	}
+
+	// After --, -token should be treated as positional (not a flag)
+	// So it should appear after all flags
+	foundPositional := false
+	for _, a := range args {
+		if a == "-token" {
+			foundPositional = true
+			break
+		}
+	}
+	if !foundPositional {
+		t.Errorf("Expected -token to be in positional args, got %v", args)
+	}
+}
+
+// TestNormalizeArgsSeparatorWithOnlyPositional tests -- with only positional args after.
+func TestNormalizeArgsSeparatorWithOnlyPositional(t *testing.T) {
+	args := normalizeArgs([]string{"--", "positional1", "positional2"})
+
+	// Everything after -- should be positional
+	foundPositional := false
+	for _, a := range args {
+		if a == "positional1" {
+			foundPositional = true
+			break
+		}
+	}
+	if !foundPositional {
+		t.Errorf("Expected positional1 after --, got %v", args)
+	}
+}
+
+// TestNormalizeArgsTripleDash tests normalizeArgs with --- (should not convert).
+func TestNormalizeArgsTripleDash(t *testing.T) {
+	args := normalizeArgs([]string{"---token", "value"})
+
+	// ---token should NOT be converted to --token
+	found := false
+	for _, a := range args {
+		if a == "---token" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Expected ---token to remain unchanged, got %v", args)
+	}
+}
+
+// TestNormalizeArgsBoolFlags tests normalizeArgs with boolean flags.
+func TestNormalizeArgsBoolFlags(t *testing.T) {
+	// Test -v flag (should not consume next arg)
+	args := normalizeArgs([]string{"-v", "8080"})
+
+	// -v should be in flags, 8080 should be positional
+	if len(args) < 2 {
+		t.Fatalf("Expected at least 2 args, got %v", args)
+	}
+
+	// Find -v and verify 8080 comes after
+	foundV := false
+	for i, a := range args {
+		if a == "-v" {
+			foundV = true
+			// 8080 should be after -v in the result
+			if i+1 < len(args) && args[i+1] == "8080" {
+				// Good - 8080 is positional after -v
+			}
+			break
+		}
+	}
+	if !foundV {
+		t.Errorf("Expected -v in args, got %v", args)
+	}
+
+	// Test -json flag (should not consume next arg)
+	args2 := normalizeArgs([]string{"-json", "-token", "abc"})
+
+	// -json should be in flags
+	foundJSON := false
+	for _, a := range args2 {
+		if a == "-json" {
+			foundJSON = true
+			break
+		}
+	}
+	if !foundJSON {
+		t.Errorf("Expected -json in args, got %v", args2)
+	}
+}
+
+// TestNormalizeArgsNonBoolFlagValue tests normalizeArgs with non-boolean flags that take values.
+func TestNormalizeArgsNonBoolFlagValue(t *testing.T) {
+	// Test -control flag (should consume next arg)
+	args := normalizeArgs([]string{"-control", ":4443", "-v"})
+
+	// Both -control and :4443 should be in flags
+	foundControl := false
+	foundValue := false
+	for _, a := range args {
+		if a == "-control" {
+			foundControl = true
+		}
+		if a == ":4443" {
+			foundValue = true
+		}
+	}
+	if !foundControl {
+		t.Errorf("Expected -control in args, got %v", args)
+	}
+	if !foundValue {
+		t.Errorf("Expected :4443 value in args, got %v", args)
+	}
+
+	// -v should be after the flag-value pair
+	foundV := false
+	for _, a := range args {
+		if a == "-v" {
+			foundV = true
+			break
+		}
+	}
+	if !foundV {
+		t.Errorf("Expected -v in args, got %v", args)
+	}
+}
+
+// TestNormalizeArgsSingleDash tests normalizeArgs with single dash.
+func TestNormalizeArgsSingleDash(t *testing.T) {
+	// Single dash should be treated as positional
+	args := normalizeArgs([]string{"-v", "-", "positional"})
+
+	foundDash := false
+	for _, a := range args {
+		if a == "-" {
+			foundDash = true
+			break
+		}
+	}
+	if !foundDash {
+		t.Errorf("Expected single dash to be positional, got %v", args)
+	}
+}
+
+// TestNormalizeArgsEmpty tests normalizeArgs with empty args.
+func TestNormalizeArgsEmpty(t *testing.T) {
+	args := normalizeArgs([]string{})
+	if len(args) != 0 {
+		t.Errorf("Expected empty args, got %v", args)
+	}
+}
+
+// TestNormalizeArgsOnlyFlags tests normalizeArgs with only flags.
+func TestNormalizeArgsOnlyFlags(t *testing.T) {
+	args := normalizeArgs([]string{"-v", "-json", "-auto-cert"})
+
+	// All should be in flags section
+	foundV := false
+	foundJSON := false
+	foundAutoCert := false
+	for _, a := range args {
+		switch a {
+		case "-v":
+			foundV = true
+		case "-json":
+			foundJSON = true
+		case "-auto-cert":
+			foundAutoCert = true
+		}
+	}
+	if !foundV || !foundJSON || !foundAutoCert {
+		t.Errorf("Expected all flags, got %v", args)
+	}
+}
+
+// TestNormalizeArgsOnlyPositional tests normalizeArgs with only positional args.
+func TestNormalizeArgsOnlyPositional(t *testing.T) {
+	args := normalizeArgs([]string{"arg1", "arg2", "arg3"})
+
+	if len(args) != 3 {
+		t.Errorf("Expected 3 args, got %d: %v", len(args), args)
+	}
+	if args[0] != "arg1" || args[1] != "arg2" || args[2] != "arg3" {
+		t.Errorf("Expected args in order, got %v", args)
+	}
+}
+
+// TestNormalizeArgsFlagAtEnd tests normalizeArgs with flag at end without value.
+func TestNormalizeArgsFlagAtEnd(t *testing.T) {
+	args := normalizeArgs([]string{"arg1", "-v"})
+
+	// -v should be before arg1 in output
+	vIndex := -1
+	arg1Index := -1
+	for i, a := range args {
+		if a == "-v" {
+			vIndex = i
+		}
+		if a == "arg1" {
+			arg1Index = i
+		}
+	}
+	if vIndex == -1 {
+		t.Errorf("Expected -v in args, got %v", args)
+	}
+	if arg1Index == -1 {
+		t.Errorf("Expected arg1 in args, got %v", args)
+	}
+	if vIndex > arg1Index {
+		t.Errorf("Expected -v before arg1, got %v", args)
+	}
+}
+
+// TestNormalizeArgsDoubleDash tests normalizeArgs with double dash at end.
+func TestNormalizeArgsDoubleDashAtEnd(t *testing.T) {
+	args := normalizeArgs([]string{"-v", "--"})
+
+	// Should just have -v, nothing after --
+	foundV := false
+	for _, a := range args {
+		if a == "-v" {
+			foundV = true
+		}
+		if a == "--" {
+			t.Errorf("Expected -- to be consumed, got %v", args)
+		}
+	}
+	if !foundV {
+		t.Errorf("Expected -v in args, got %v", args)
+	}
+}
+
+// TestNormalizeArgsFlagValueAtEnd tests normalizeArgs with flag value at end.
+func TestNormalizeArgsFlagValueAtEnd(t *testing.T) {
+	args := normalizeArgs([]string{"-control", ":4443"})
+
+	if len(args) != 2 {
+		t.Errorf("Expected 2 args, got %d: %v", len(args), args)
+	}
+	if args[0] != "-control" || args[1] != ":4443" {
+		t.Errorf("Expected [-control, :4443], got %v", args)
+	}
+}
+
+// TestNormalizeArgsDoubleDashSeparatorOnly tests normalizeArgs with just --.
+func TestNormalizeArgsDoubleDashSeparatorOnly(t *testing.T) {
+	args := normalizeArgs([]string{"--"})
+
+	// Should be empty
+	if len(args) != 0 {
+		t.Errorf("Expected empty args, got %v", args)
+	}
+}
