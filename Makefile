@@ -2,7 +2,7 @@
 
 BINARY_SERVER=wirerift-server
 BINARY_CLIENT=wirerift
-VERSION?=1.4.3
+VERSION?=1.6.0
 GO=go
 GOFLAGS=-v
 PACKAGES=$(shell go list ./... | grep -v /website/)

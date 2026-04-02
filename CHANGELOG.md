@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.6.0] - 2025-04-02
+## [1.6.0] - 2026-04-02
 
 ### Added
 - **Persistent Tunnels**: Tunnels now survive server restarts with automatic reconnection
@@ -14,16 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Additional CLI Tests**: Complete coverage for edge cases in argument parsing
 
 ### Fixed
-- **Defensive Crypto**: Added proper error checks for crypto/rand operations
-- **Type Safety**: Safe type assertions throughout the codebase
-- **Benchmark Stability**: Fixed thread exhaustion on Windows with shared HTTP client pool
-- **Webhook Removal**: Cleaned up unused webhook functionality
+- Defensive error checks for `crypto/rand` operations
+- Safe type assertions throughout the codebase
+- Benchmark thread exhaustion on Windows with shared HTTP client pool
+- Cleaned up unused webhook functionality
 
 ### Security
 - Improved error handling in cryptographic operations
 - Safe type assertions to prevent panics
 
-## [1.5.0] - Previous Release
+## [1.5.0] - 2026-03-20
 
 ### Added
 - Let's Encrypt ACME support with HTTP-01 challenge
@@ -35,26 +35,155 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - IP whitelist (CIDR) protection
 - Basic Auth for tunnels
 - PIN protection for tunnel access
-
-### Features
 - HTTP and TCP tunneling
 - WebSocket passthrough
 - Stream multiplexing with flow control
 - Graceful shutdown
-- Auto-reconnect
+- Auto-reconnect with exponential backoff
 - Health check endpoint (`/healthz`)
 - X-Request-ID tracing
 - Dark/light theme for dashboard
 
-## [1.4.0] - [1.4.3]
+## [1.4.3] - 2026-03-16
+
+### Fixed
+- Auto-reconnect enabled on all CLI commands (was disabled, client exited on connection loss)
+- Dashboard CSS rendering (double-percent escape in Go raw string)
+
+### Changed
+- README updated with v1.4.x features: token auth, JSON config, dashboard, healthz, X-Request-ID
+- Full codebase audit: 0 bugs found, all 15 packages pass, 97-100% coverage
+
+## [1.4.2] - 2026-03-16
 
 ### Added
-- Initial release with core tunneling functionality
-- Multiplexing protocol
-- TLS support
-- Docker support
-- Configuration via CLI, env vars, and files
+- **Advanced Dashboard UI** — complete rewrite of the monitoring dashboard
+  - Dark/Light theme toggle with localStorage persistence
+  - Tabbed navigation: Tunnels / Sessions / Inspector with live count badges
+  - Animated byte counters with smooth interpolation between polls
+  - Live uptime counter ticking every second
+  - Keyboard shortcuts: R=refresh, T=tunnels, S=sessions, I=inspector
+  - Tunnel URL copy-to-clipboard with visual feedback
+  - Traffic Inspector with request/response headers, JSON syntax highlighting
+  - Search/filter across all tables, cURL export, request replay
+  - Toast notification system, responsive layout (480px-1440px+)
+  - CSP nonce-based script security, no external dependencies
 
----
+## [1.4.1] - 2026-03-16
 
-For older releases, see [GitHub Releases](https://github.com/WireRift/WireRift/releases).
+### Fixed
+- **Token auth not working** — `auth.NewManager` now accepts user-defined token (`-token` flag > `WIRERIFT_TOKEN` env > auto-random)
+- **`--double-dash` flags** — both `-token` and `--token` now work
+- Server banner quick start command address formatting
+
+### Added
+- `-token` flag on server CLI to set a persistent auth token
+- Server banner shows full connection info + copy-paste quick start command
+
+## [1.4.0] - 2026-03-16
+
+### Added
+- **Health check endpoint** (`/healthz`) for load balancer and orchestrator integration
+- **X-Request-ID header** for distributed request tracing (auto-generated or preserved)
+- **JSON config file support** (`wirerift.json`) alongside YAML, with auto-fallback
+- **CSP nonce-based security** on dashboard
+- E2E tests for healthz, X-Request-ID; 2500+ lines of new tests
+
+### Security
+- Replaced hardcoded HMAC key with per-instance `crypto/rand` secret for PIN cookies
+- Added HTTP server timeouts (Slowloris DoS prevention)
+- Fixed `sync.Map` race — atomic `LoadOrStore` of real tunnel
+- Fixed `mux.Close()` not called on auth failure — goroutine leak
+- CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy headers
+- CSRF protection, `Secure` flag on PIN cookies, `MaxBytesReader` on POST
+
+### Fixed
+- Reconnect mux race — handlers receive mux as parameter instead of shared field
+- Old mux goroutine leak on reconnect — explicit close before creating new
+- `inspectResponseWriter` implements `http.Flusher` and `http.Hijacker`
+- Request log slice memory leak — backing array released via copy
+- Nil map panic in `handleTunnelClose` and `handleTunnelRequest`
+- Silent `Close()` errors on TLS writes — `writeFileAtomic` checks close error
+- ACME `io.ReadAll` bounded to 4MB; 6 ignored `json.Unmarshal` errors fixed
+- DNS case-insensitive subdomain matching
+- `time.After` leak replaced with `time.NewTimer` + `Stop()`
+
+### Changed
+- Server split: `server.go` → `pin.go`, `inspect.go`, `http_edge.go`
+- ACME operations accept `context.Context` for cancellation
+- Client uses shared `http.Client` with connection pooling
+- `recover()` added to all production goroutines
+- Graceful shutdown for HTTP/HTTPS edge servers
+
+### Infrastructure
+- Dockerfile: `scratch` → `alpine:3.20` with CA certs, non-root user, healthcheck
+- docker-compose.yml: V2 format, TCP port range, healthcheck
+- CI: `golangci-lint`, coverage artifact upload, 90% threshold
+- Makefile: `test-race`, `fuzz`, `docker` targets
+- `.golangci.yml`: `gosec`, `bodyclose`, `noctx`, `exportloopref` linters
+
+## [1.3.0] - 2026-03-16
+
+### Added
+- **Let's Encrypt ACME** — automatic HTTPS via HTTP-01 challenge, zero external dependencies
+- ACME account key management (ECDSA P-256, persisted to disk)
+- JWS signed requests per RFC 8555
+- HTTP-01 challenge solver with automatic token serving
+- Certificate auto-renewal (12h check, 30-day pre-expiry renewal)
+- Certificate bundle storage with metadata
+- Fallback chain: disk → ACME → self-signed
+- CLI flags: `-acme-email`, `-acme-staging`
+
+## [1.2.0] - 2026-03-16
+
+### Added
+- **Basic Auth** for HTTP tunnels (`-auth user:pass`) with constant-time comparison
+- **Custom Response Headers** (`-header "X-Robots:noindex,Cache-Control:no-store"`)
+- **Traffic Inspector** — real-time request/response capture with dashboard UI
+- **Request Replay** — replay any captured request from dashboard or API
+- **File Server Mode** (`wirerift serve ./dist`) — serve static files through tunnel
+- **Webhook Relay** — fan-out incoming requests to multiple local endpoints
+
+## [1.1.1] - 2026-03-15
+
+### Added
+- Fuzz test suite: 6 fuzzers (~52M inputs, 0 crashes)
+- Advanced test suite: security (16), stress (5), reconnect (5), soak (4) = 30 tests
+- Benchmark suite: HTTP latency/throughput/concurrency, TCP throughput, tunnel creation
+- CI: race detector, fuzz tests, advanced tests, coverage threshold enforcement
+
+## [1.1.0] - 2026-03-15
+
+### Added
+- IP whitelist for HTTP tunnels (`-whitelist`) — IPv4/IPv6/CIDR per-tunnel
+- PIN protection for HTTP tunnels (`-pin`) — browser form, header, or query param
+- TCP tunnel whitelist enforcement
+- Rate limiter eviction to prevent memory leak
+- Server-side bytes_in/bytes_out traffic tracking
+
+### Security
+- Constant-time comparison in BasicAuth and PIN
+- Modulo bias eliminated in random string generation
+- TLS certificates written with 0600 permissions
+- PIN cookie uses HMAC instead of raw value
+- Stream ID 0 collision with ControlStreamID fixed
+
+### Fixed
+- Dashboard graceful shutdown timeout (was unbounded)
+- Ring buffer growth capped at 16 MB
+- `io.ReadAll` calls bounded (64 MB responses, 32 MB request bodies)
+- Port allocation race condition fixed with modulo wrap-around
+- Unique request IDs via `crypto/rand`
+
+### Removed
+- ~3,100 lines of dead code (unused packages, types, error sentinels, utilities)
+
+## [1.0.1] - 2026-03-01
+
+### Added
+- Initial project scaffolding
+
+## [1.0.0] - 2026-02-15
+
+### Added
+- Initial release

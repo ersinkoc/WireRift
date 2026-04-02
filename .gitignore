@@ -7,11 +7,21 @@ dist/
 *.so
 *.dylib
 
-# Environment
+# Go build/test artifacts
+*.test
+*.prof
+*.pprof
+
+# Coverage reports
+*.out
+*.cov
+*.html
+!website/**/*.html
+!internal/dashboard/static/**/*.html
+
+# Environment & secrets
 .env
 .env.*
-
-# Certificates
 certs/
 *.pem
 *.crt
@@ -22,17 +32,16 @@ certs/
 .vscode/
 *.swp
 *.swo
+*~
 
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Build artifacts
-*.test
-*.out
-*.cov
+# Node (website/)
+website/node_modules/
+website/dist/
 
-# Coverage reports
-*_cov.html
-cov*.html
-coverage.html
+# Fuzz corpus (can be large)
+**/testdata/fuzz/

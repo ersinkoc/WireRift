@@ -6,7 +6,8 @@ set -e
 MIN_COVERAGE=${MIN_COVERAGE:-70}
 
 echo "Running tests with coverage..."
-go test -coverprofile=coverage.out -covermode=atomic ./...
+PACKAGES=$(go list ./... | grep -v /website/)
+go test -coverprofile=coverage.out -covermode=atomic $PACKAGES
 
 COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
 echo "Total coverage: ${COVERAGE}%"
