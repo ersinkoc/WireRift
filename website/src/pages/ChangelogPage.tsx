@@ -13,6 +13,21 @@ interface ChangelogEntry {
 
 const changelog: ChangelogEntry[] = [
   {
+    version: '1.6.0',
+    date: '2026-04-02',
+    title: 'Persistent Tunnels & 100% Test Coverage',
+    changes: [
+      { type: 'added', description: 'Persistent tunnels - survive server restarts with automatic reconnection' },
+      { type: 'added', description: 'Dashboard session heartbeat - real-time uptime and last seen tracking' },
+      { type: 'added', description: 'Comprehensive test coverage - 95-100% coverage across all packages' },
+      { type: 'added', description: 'Edge case testing for CLI argument parsing' },
+      { type: 'fixed', description: 'Defensive crypto/rand error checks' },
+      { type: 'fixed', description: 'Safe type assertions throughout codebase' },
+      { type: 'fixed', description: 'Benchmark thread exhaustion on Windows' },
+      { type: 'removed', description: 'Unused webhook functionality' },
+    ],
+  },
+  {
     version: '1.3.0',
     date: '2026-03-16',
     title: "Let's Encrypt ACME (Zero Dependencies)",

@@ -2,7 +2,7 @@ export const SITE = {
   name: 'WireRift',
   tagline: 'Tear a rift through the wire. Expose localhost to the world.',
   description: 'Self-hosted tunnel server written in Go with zero dependencies. Expose your local services to the internet securely.',
-  version: '1.3.0',
+  version: '1.6.0',
   domain: 'wirerift.com',
   url: 'https://wirerift.com',
   repo: 'https://github.com/wirerift/wirerift',
@@ -91,11 +91,6 @@ export const FEATURES = [
     description: 'Serve a static directory through a tunnel with wirerift serve. No local web server needed.',
   },
   {
-    icon: 'GitBranch',
-    title: 'Webhook Relay',
-    description: 'Fan-out incoming webhooks to multiple local endpoints simultaneously.',
-  },
-  {
     icon: 'Layers',
     title: 'Stream Multiplexing',
     description: 'Custom binary protocol multiplexes streams over a single TCP connection.',
@@ -112,8 +107,8 @@ export const FEATURES = [
   },
   {
     icon: 'CheckCircle',
-    title: '99.7% Test Coverage',
-    description: 'Comprehensive test suite with fuzz, security, stress, and soak tests.',
+    title: '95-100% Test Coverage',
+    description: 'Comprehensive test suite with fuzz, security, stress, and soak tests across all packages.',
   },
 ] as const
 
