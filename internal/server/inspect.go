@@ -153,10 +153,18 @@ func (s *Server) ReplayRequest(logID string) (*RequestLog, error) {
 		return nil, fmt.Errorf("send stream open: %w", err)
 	}
 
-	reqData, _ := SerializeRequest(req)
-	stream.Write(reqData)
+	reqData, err := SerializeRequest(req)
+	if err != nil {
+		return nil, fmt.Errorf("serialize request: %w", err)
+	}
+	if _, err := stream.Write(reqData); err != nil {
+		return nil, fmt.Errorf("write request: %w", err)
+	}
 
-	respData, _ := io.ReadAll(io.LimitReader(stream, 64*1024*1024))
+	respData, err := io.ReadAll(io.LimitReader(stream, 64*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
 	resp, err := DeserializeResponse(respData)
 	if err != nil {
 		return nil, fmt.Errorf("deserialize: %w", err)

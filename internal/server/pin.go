@@ -107,7 +107,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 .card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:40px;max-width:400px;width:90%%;text-align:center}
 .logo{font-size:24px;font-weight:700;margin-bottom:8px;color:#fff}
 .sub{color:#94a3b8;font-size:14px;margin-bottom:24px}
-%s
 form{display:flex;flex-direction:column;gap:12px}
 input[type=password]{background:#0f172a;border:1px solid #475569;border-radius:8px;padding:12px 16px;color:#e2e8f0;font-size:16px;text-align:center;letter-spacing:8px;outline:none}
 input[type=password]:focus{border-color:#6366f1}
@@ -128,5 +127,5 @@ button:hover{background:#4f46e5}
 <p class="hint">You can also pass the PIN via header: X-WireRift-PIN</p>
 </div>
 </body>
-</html>`, errorHTML, errorHTML)
+</html>`, errorHTML)
 }

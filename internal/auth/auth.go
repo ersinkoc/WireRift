@@ -94,7 +94,10 @@ func NewManager(token ...string) *Manager {
 func (m *Manager) ValidateToken(tokenSecret string) (*Token, *Account, error) {
 	// Check development token
 	if m.devToken != nil && subtle.ConstantTimeCompare([]byte(m.devToken.Secret), []byte(tokenSecret)) == 1 {
-		account, _ := m.accounts.Load(m.devToken.AccountID)
+		account, ok := m.accounts.Load(m.devToken.AccountID)
+		if !ok {
+			return nil, nil, ErrInvalidToken
+		}
 		return m.devToken, account.(*Account), nil
 	}
 

@@ -101,7 +101,16 @@ func WriteResponse(w http.ResponseWriter, resp *http.Response) error {
 	return nil
 }
 
-// IsWebSocketRequest checks if a request is a WebSocket upgrade.
+// IsWebSocketRequest checks if a request is a WebSocket upgrade per RFC 6455.
 func IsWebSocketRequest(r *http.Request) bool {
-	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return false
+	}
+	// Connection header must contain "upgrade" (RFC 6455 Section 4.2.1)
+	for _, v := range strings.Split(r.Header.Get("Connection"), ",") {
+		if strings.EqualFold(strings.TrimSpace(v), "upgrade") {
+			return true
+		}
+	}
+	return false
 }
