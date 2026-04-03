@@ -38,10 +38,10 @@ The overall architecture is sound — clean package separation, proper use of `i
 | Severity | Count |
 |----------|-------|
 | CRITICAL | 4 |
-| HIGH | 9 |
-| MEDIUM | 16 |
-| LOW | 22 |
-| **Total** | **51** |
+| HIGH | 12 |
+| MEDIUM | 23 |
+| LOW | 25 |
+| **Total** | **64** |
 
 ---
 
@@ -301,22 +301,70 @@ case <-s.windowCh:
 
 ---
 
+### 12. [HIGH] Account `Active` Flag Never Checked — Auth Bypass
+
+**Category:** Security — Authorization Bypass
+**File:** `internal/auth/auth.go`
+**Lines:** 94-128
+**Impact:** Disabled/suspended accounts can still authenticate and create tunnels.
+
+**Problem:** The `Account` struct has an `Active bool` field, but `ValidateToken` never checks it. Neither `Manager.Middleware` nor `Dashboard.authMiddleware` verifies account status. A disabled account retains full access.
+
+**Recommendation:** Add `if !foundAccount.Active { return nil, nil, ErrUnauthorized }` after resolving the account in `ValidateToken`.
+
+---
+
+### 13. [HIGH] Domain Actions Lack Ownership Check — Privilege Escalation
+
+**Category:** Security — Authorization Bypass
+**File:** `internal/dashboard/dashboard.go`
+**Lines:** 203-257
+**Impact:** Any authenticated user can delete or verify any other user's domain.
+
+**Problem:** `handleDomainActions` extracts a domain from the URL path and acts on it without checking `CustomDomain.AccountID` against the authenticated user's account. User A can DELETE or verify User B's domain.
+
+**Recommendation:** Extract the authenticated user's account ID from the token and verify `domain.AccountID == authenticatedAccountID` before any mutation.
+
+---
+
+### 14. [HIGH] Dashboard Bound to All Interfaces on HTTP
+
+**Category:** Security — Network Exposure
+**File:** `cmd/wirerift-server/main.go`
+**Line:** 258
+**Impact:** Dashboard (port 4040) is world-accessible over plaintext HTTP. Tokens sent via Bearer auth are exposed in transit.
+
+**Problem:** The dashboard server listens on `:<port>` (all interfaces) by default with no TLS. While API endpoints require Bearer tokens, the `serveIndex` handler and static files are served without authentication, leaking the dashboard UI and API endpoint structure to any network scanner.
+
+**Recommendation:** Default dashboard bind to `127.0.0.1:<port>` or add TLS support for the dashboard endpoint.
+
+---
+
 ## All Findings by Category
 
-### Security (10 issues)
+### Security (19 issues)
 
 | # | Severity | File | Line | Issue |
 |---|----------|------|------|-------|
 | S1 | CRITICAL | `server/http_proxy.go` | 36-45 | X-Forwarded-For header spoofing |
 | S2 | CRITICAL | `server/inspect.go` | 110-188 | ReplayRequest bypasses auth/PIN/IP whitelist |
-| S3 | MEDIUM | `server/pin.go` | 56-67 | PIN exposed in URL query parameter (logs, Referer, history) |
-| S4 | MEDIUM | `server/pin.go` | 98-131 | `errorHTML` double-injected (into `<style>` + body) — latent XSS risk |
-| S5 | MEDIUM | `server/pin.go` | 56-67 | Path-relative redirect could be open redirect via `//evil.com` |
-| S6 | MEDIUM | `server/http_edge.go` | 31-36 | Client-supplied X-Request-ID accepted unvalidated |
-| S7 | MEDIUM | `proto/constants.go` | 5 | Mutable exported `Magic` byte slice |
-| S8 | LOW | `proto/messages.go` | 10, 39-42 | Auth tokens/passwords transmitted as plaintext JSON (requires TLS) |
-| S9 | LOW | `proto/frame.go` | 165-169 | `ReadMagic` uses non-constant-time comparison (timing side-channel on magic bytes) |
-| S10 | LOW | `config/domains.go` | 213-218 | `generateVerificationCode` generates different codes on each call (not stored immutably) |
+| S3 | HIGH | `auth/auth.go` | 94-128 | Account `Active` flag never checked — disabled accounts can authenticate |
+| S4 | HIGH | `dashboard/dashboard.go` | 203-257 | Domain actions lack ownership check — any user can delete/verify any domain |
+| S5 | HIGH | `cmd/wirerift-server/main.go` | 258 | Dashboard bound to all interfaces on plaintext HTTP |
+| S6 | MEDIUM | `server/pin.go` | 56-67 | PIN exposed in URL query parameter (logs, Referer, history) |
+| S7 | MEDIUM | `server/pin.go` | 98-131 | `errorHTML` double-injected (into `<style>` + body) — latent XSS risk |
+| S8 | MEDIUM | `server/pin.go` | 56-67 | Path-relative redirect could be open redirect via `//evil.com` |
+| S9 | MEDIUM | `server/http_edge.go` | 31-36 | Client-supplied X-Request-ID accepted unvalidated |
+| S10 | MEDIUM | `proto/constants.go` | 5 | Mutable exported `Magic` byte slice |
+| S11 | MEDIUM | `client/client.go` | 600-631 | Client HTTP proxy forwards all headers including hop-by-hop to local service |
+| S12 | MEDIUM | `dashboard/dashboard.go` | 87-121 | No brute-force protection / rate limiting on token auth endpoint |
+| S13 | MEDIUM | `cmd/wirerift-server/main.go` | 170 | Auth token printed to stderr in plaintext on every startup |
+| S14 | MEDIUM | `tls/acme.go` | 532-539 | `jwk()` doesn't pad X/Y coordinates — thumbprint mismatch for some ECDSA keys |
+| S15 | MEDIUM | `dashboard/dashboard.go` | — | Missing `http.MaxBytesReader` on most POST endpoints (memory exhaustion) |
+| S16 | LOW | `proto/messages.go` | 10, 39-42 | Auth tokens/passwords transmitted as plaintext JSON (requires TLS) |
+| S17 | LOW | `proto/frame.go` | 165-169 | `ReadMagic` uses non-constant-time comparison (timing side-channel on magic bytes) |
+| S18 | LOW | `config/domains.go` | 213-218 | Verification code has only 32 bits of randomness (brute-forceable) |
+| S19 | LOW | `tls/certs.go` | 181 | Self-signed cert includes wildcard `*.<domain>` for entire base domain |
 
 ### Concurrency & Race Conditions (12 issues)
 
@@ -331,9 +379,10 @@ case <-s.windowCh:
 | C7 | MEDIUM | `server/server.go` | 706-714 | TCP listener shutdown goroutine not tracked in `s.wg` (goroutine leak) |
 | C8 | MEDIUM | `proto/frame.go` | 147-151 | `FrameWriter.Write` doesn't protect caller's `*Frame` from concurrent mutation |
 | C9 | MEDIUM | `mux/stream.go` | 197-209 | `Reset()` not idempotent — sends multiple RST frames, no once-guard |
-| C10 | LOW | `server/server.go` | 1045-1059 | `cleanupInactiveSessions` double-removal race via mux close + deferred removeSession |
-| C11 | LOW | `server/inspect.go` | 20-31 | `inspectResponseWriter.written` not mutex-protected (theoretical race under WebSocket hijack) |
-| C12 | LOW | `mux/stream.go` | 126-168 | `Write` checks state without CAS; concurrent Close+Write could send data on half-closed stream |
+| C10 | MEDIUM | `client/client.go` | 430 | `reconnectLoop` reads `c.mux` without synchronization — data race with `connect()` |
+| C11 | LOW | `server/server.go` | 1045-1059 | `cleanupInactiveSessions` double-removal race via mux close + deferred removeSession |
+| C12 | LOW | `server/inspect.go` | 20-31 | `inspectResponseWriter.written` not mutex-protected (theoretical race under WebSocket hijack) |
+| C13 | LOW | `mux/stream.go` | 126-168 | `Write` checks state without CAS; concurrent Close+Write could send data on half-closed stream |
 
 ### Nil/Zero Value Handling (5 issues)
 
@@ -345,7 +394,7 @@ case <-s.windowCh:
 | N4 | LOW | `proto/messages.go` | 23-25, 48, 89 | `HeartbeatInterval`, `RemotePort`, `ReconnectAfter` are `int` not `uint`; negative values accepted |
 | N5 | LOW | `proto/messages.go` | 117 | `ParseHeartbeat` casts `uint64` to `int64` — sign flip on large values |
 
-### Error Handling (8 issues)
+### Error Handling (10 issues)
 
 | # | Severity | File | Line | Issue |
 |---|----------|------|------|-------|
@@ -353,10 +402,12 @@ case <-s.windowCh:
 | E2 | MEDIUM | Multiple server files | — | ~15 instances of `EncodeJSONPayload` error discarded with `_`; nil frame passed to Write |
 | E3 | MEDIUM | `server/inspect.go` | 156-159 | ReplayRequest discards errors from SerializeRequest, Write, ReadAll |
 | E4 | MEDIUM | `server/server.go` | 231-245 | Partial Start() failure leaves control listener open (resource leak) |
-| E5 | LOW | `proto/fuzz_test.go` | 19, 71-82 | Fuzz test corpus seeding ignores Encode errors |
-| E6 | LOW | `proto/messages_test.go` | 236, 243 | `TestFullProtocolRoundTrip` ignores EncodeJSONPayload error; nil frame → panic |
-| E7 | LOW | `server/server.go` | 349-350 | `generateSubdomain` ignores `rand.Read` error |
-| E8 | LOW | `ratelimit/ratelimit.go` | 64-72 | `WaitN` uses busy-wait with `time.Sleep(10ms)` — should use time-based reservation |
+| E5 | MEDIUM | `auth/auth.go` | 98 | devToken account lookup discards `ok` — nil panic if account missing from map |
+| E6 | MEDIUM | `tls/acme.go` | 282-283 | Certificate expiry hardcoded to 90 days instead of parsed from actual certificate |
+| E7 | LOW | `proto/fuzz_test.go` | 19, 71-82 | Fuzz test corpus seeding ignores Encode errors |
+| E8 | LOW | `proto/messages_test.go` | 236, 243 | `TestFullProtocolRoundTrip` ignores EncodeJSONPayload error; nil frame → panic |
+| E9 | LOW | `server/server.go` | 349-350 | `generateSubdomain` ignores `rand.Read` error |
+| E10 | LOW | `ratelimit/ratelimit.go` | 64-72 | `WaitN` uses busy-wait with `time.Sleep(10ms)` — no context cancellation support |
 
 ### Resource Management (8 issues)
 
@@ -434,9 +485,12 @@ case <-s.windowCh:
 
 1. **Fix X-Forwarded-For spoofing** (`http_proxy.go:36-45`) — Strip or replace untrusted XFF headers
 2. **Add auth checks to ReplayRequest** (`inspect.go:110-188`) — Re-verify IP whitelist, PIN, Basic Auth
-3. **Fix nil dereference in ReplayRequest** (`inspect.go:138`) — Check `http.NewRequest` error
-4. **Fix nil guard in DecodeJSONPayload** (`messages.go:136`) — Add nil frame check
-5. **Fix 3 failing tests** — Ensure /healthz and X-Request-ID work on all bind addresses
+3. **Check Account.Active in ValidateToken** (`auth.go:94-128`) — Disabled accounts should be rejected
+4. **Add ownership check to domain actions** (`dashboard.go:203-257`) — Verify `AccountID` matches authenticated user
+5. **Bind dashboard to localhost by default** (`cmd/wirerift-server/main.go:258`) — Prevent world-accessible HTTP dashboard
+6. **Fix nil dereference in ReplayRequest** (`inspect.go:138`) — Check `http.NewRequest` error
+7. **Fix nil guard in DecodeJSONPayload** (`messages.go:136`) — Add nil frame check
+8. **Fix 3 failing tests** — Ensure /healthz and X-Request-ID work on all bind addresses
 
 ### Phase 2 — Soon (Concurrency & Resource)
 
