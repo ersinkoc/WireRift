@@ -12,7 +12,7 @@
 
 WireRift is a well-structured, zero-dependency tunnel server with impressively high test coverage (99.1%) and clean architecture. The codebase demonstrates strong Go idioms in most areas — constant-time auth comparisons, proper use of `crypto/rand`, context-based lifecycle management, and thorough edge-case testing including fuzz tests.
 
-However, the audit identified **7 critical/high severity issues** that warrant immediate attention, primarily around: (1) an X-Forwarded-For header spoofing vulnerability enabling SSRF preconditions, (2) a replay endpoint that bypasses all tunnel access controls, (3) a TOCTOU race condition on tunnel limits, (4) several nil-dereference paths from ignored errors, and (5) three failing tests indicating incomplete feature implementations. Additionally, there are ~20 medium/low severity findings around resource management, error handling consistency, and protocol-level hardening.
+However, the audit identified **11 critical/high severity issues** that warrant immediate attention, primarily around: (1) an X-Forwarded-For header spoofing vulnerability enabling SSRF preconditions, (2) a replay endpoint that bypasses all tunnel access controls, (3) multiple TOCTOU race conditions (tunnel limits, stream lifecycle), (4) concurrent unprotected writes to the mux FrameWriter from multiple goroutines, (5) flow-control violations that can deadlock or allow memory exhaustion, (6) several nil-dereference paths from ignored errors, and (7) three failing tests indicating incomplete feature implementations. Additionally, there are ~30 medium/low severity findings around resource management, error handling consistency, and protocol-level hardening.
 
 The overall architecture is sound — clean package separation, proper use of `internal/`, and well-chosen abstractions (mux/stream/frame layering). The zero-dependency constraint is admirably maintained throughout.
 
@@ -24,7 +24,7 @@ The overall architecture is sound — clean package separation, proper use of `i
 |---|---|---|
 | **Code Health** | 8 | Clean architecture, high coverage, good idioms |
 | **Security** | 6 | Auth/crypto solid, but header injection + replay bypass |
-| **Concurrency Safety** | 7 | Generally well-synchronized, 2 notable races |
+| **Concurrency Safety** | 5 | Multiple races in mux/stream state machine + unprotected FrameWriter |
 | **Performance** | 7 | Good use of pools/atomics, some buffering concerns |
 | **Maintainability** | 8 | Clear structure, consistent patterns, good test suite |
 | **Test Coverage** | 9 | 99.1% statements, fuzz tests, integration tests |
@@ -37,11 +37,11 @@ The overall architecture is sound — clean package separation, proper use of `i
 
 | Severity | Count |
 |----------|-------|
-| CRITICAL | 2 |
-| HIGH | 5 |
-| MEDIUM | 12 |
-| LOW | 17 |
-| **Total** | **36** |
+| CRITICAL | 4 |
+| HIGH | 9 |
+| MEDIUM | 16 |
+| LOW | 22 |
+| **Total** | **51** |
 
 ---
 
@@ -220,6 +220,87 @@ func DecodeJSONPayload(f *Frame, v any) error {
 
 ---
 
+### 8. [CRITICAL] Concurrent Unprotected Writes to FrameWriter from Multiple Goroutines
+
+**Category:** Concurrency — Data Race
+**File:** `internal/mux/mux.go` + `internal/mux/stream.go`
+**Impact:** Corrupted wire protocol frames, data corruption, potential panics.
+
+**Problem:** `proto.FrameWriter.Write()` is called concurrently from:
+- The `Run()` loop (heartbeat ACKs via `handleHeartbeat`)
+- Each stream's `Write()` (via `sendDataFrame`)
+- Each stream's `Close()` (via `sendStreamClose`)
+- Each stream's `Reset()` (via `sendStreamReset`)
+- Each stream's `readFromBuffer` (via `sendWindowUpdate`)
+
+While `FrameWriter` has an internal mutex protecting the underlying `io.Writer`, the issue is that `Frame` objects passed by pointer to `Write()` can be concurrently mutated by callers. The mutex protects serialization order but not the frame data being read during encoding.
+
+---
+
+### 9. [CRITICAL] No Receive-Side Flow Control Enforcement
+
+**Category:** Security — Memory Exhaustion / Data Loss
+**File:** `internal/mux/stream.go`
+**Lines:** 218-229
+**Impact:** A malicious peer can flood 16 MB per stream; data beyond buffer capacity is silently discarded.
+
+**Current Code:**
+```go
+func (s *Stream) onDataFrame(data []byte) error {
+    s.readBuf.Write(data)  // return values ignored
+    // ...
+    return nil
+}
+```
+
+**Problem:** There is no check that received data fits within the advertised receive window. A sender ignoring flow control can flood data into the ring buffer. Combined with `maxRingBufferSize = 16MB`, each stream can buffer 16 MB. Beyond that, `ringBuffer.Write` returns `(0, nil)` — silently discarding data with no error, violating the `io.Writer` contract. This is both a memory exhaustion vector (many streams x 16 MB) and a silent data-loss path.
+
+---
+
+### 10. [HIGH] Flow Control Deadlock: Window Update Failure After Buffer Consume
+
+**Category:** Bug — Protocol Deadlock
+**File:** `internal/mux/stream.go`
+**Lines:** 114-123
+**Impact:** Permanent stream deadlock — remote peer never gets window credit back.
+
+**Current Code:**
+```go
+func (s *Stream) readFromBuffer(p []byte) (int, error) {
+    n, _ := s.readBuf.Read(p)
+    if n > 0 {
+        if err := s.mux.sendWindowUpdate(s.id, uint32(n)); err != nil {
+            return n, err
+        }
+    }
+    return n, nil
+}
+```
+
+**Problem:** If `sendWindowUpdate` fails (connection error), `n` bytes have already been consumed from the ring buffer. The caller gets those bytes successfully. But the remote peer was never told about the freed window space. On subsequent calls, the remote will see window=0 and stall permanently. The consumed bytes are lost from the flow-control accounting, creating an irrecoverable deadlock.
+
+---
+
+### 11. [HIGH] Stream Write Can Spin Forever After Reset
+
+**Category:** Bug — Infinite Loop
+**File:** `internal/mux/stream.go`
+**Lines:** 137-168
+**Impact:** Goroutine stuck in infinite loop consuming CPU.
+
+**Problem:** `Write()` waits on `windowCh` when the window is exhausted. `onResetFrame()` signals `windowCh` to wake blocked writers, but `Write()` never rechecks the stream state after waking — it only rechecks the window value. Since a reset doesn't grant window credit, the writer wakes up, finds window still <= 0, and goes back to waiting on `windowCh` forever (since `onResetFrame` only signals once). The loop only exits via `s.mux.done`.
+
+**Recommendation:** Check `s.state.Load()` after waking from `windowCh`:
+```go
+case <-s.windowCh:
+    if s.state.Load() == streamStateReset {
+        return total, ErrStreamReset
+    }
+    continue
+```
+
+---
+
 ## All Findings by Category
 
 ### Security (10 issues)
@@ -237,17 +318,22 @@ func DecodeJSONPayload(f *Frame, v any) error {
 | S9 | LOW | `proto/frame.go` | 165-169 | `ReadMagic` uses non-constant-time comparison (timing side-channel on magic bytes) |
 | S10 | LOW | `config/domains.go` | 213-218 | `generateVerificationCode` generates different codes on each call (not stored immutably) |
 
-### Concurrency & Race Conditions (7 issues)
+### Concurrency & Race Conditions (12 issues)
 
 | # | Severity | File | Line | Issue |
 |---|----------|------|------|-------|
-| C1 | HIGH | `server/server.go` | 518-536 | TOCTOU race on max-tunnels-per-session check |
-| C2 | HIGH | `proto/constants.go` | 5 | `Magic` global mutable slice — data race |
-| C3 | MEDIUM | `server/server.go` | 706-714 | TCP listener shutdown goroutine not tracked in `s.wg` (goroutine leak) |
-| C4 | MEDIUM | `proto/frame.go` | 147-151 | `FrameWriter.Write` doesn't protect caller's `*Frame` from concurrent mutation |
-| C5 | LOW | `server/server.go` | 1045-1059 | `cleanupInactiveSessions` double-removal race via mux close + deferred removeSession |
-| C6 | LOW | `server/inspect.go` | 20-31 | `inspectResponseWriter.written` not mutex-protected (theoretical race under WebSocket hijack) |
-| C7 | LOW | `mux/stream.go` | 126-168 | `Write` checks state without CAS; concurrent Close+Write could send data on half-closed stream |
+| C1 | CRITICAL | `mux/mux.go` + `mux/stream.go` | multiple | Concurrent FrameWriter writes from multiple goroutines — frame data races |
+| C2 | HIGH | `server/server.go` | 518-536 | TOCTOU race on max-tunnels-per-session check |
+| C3 | HIGH | `proto/constants.go` | 5 | `Magic` global mutable slice — data race |
+| C4 | HIGH | `mux/mux.go` | 95-111 | TOCTOU in OpenStream: stream stored after mux shutdown — permanent leak |
+| C5 | HIGH | `mux/stream.go` | 172-210 | Non-atomic load+CAS state transitions allow state corruption on concurrent close+reset |
+| C6 | HIGH | `mux/stream.go` | 164 | Window can go negative under concurrent writes — protocol violation |
+| C7 | MEDIUM | `server/server.go` | 706-714 | TCP listener shutdown goroutine not tracked in `s.wg` (goroutine leak) |
+| C8 | MEDIUM | `proto/frame.go` | 147-151 | `FrameWriter.Write` doesn't protect caller's `*Frame` from concurrent mutation |
+| C9 | MEDIUM | `mux/stream.go` | 197-209 | `Reset()` not idempotent — sends multiple RST frames, no once-guard |
+| C10 | LOW | `server/server.go` | 1045-1059 | `cleanupInactiveSessions` double-removal race via mux close + deferred removeSession |
+| C11 | LOW | `server/inspect.go` | 20-31 | `inspectResponseWriter.written` not mutex-protected (theoretical race under WebSocket hijack) |
+| C12 | LOW | `mux/stream.go` | 126-168 | `Write` checks state without CAS; concurrent Close+Write could send data on half-closed stream |
 
 ### Nil/Zero Value Handling (5 issues)
 
@@ -272,36 +358,43 @@ func DecodeJSONPayload(f *Frame, v any) error {
 | E7 | LOW | `server/server.go` | 349-350 | `generateSubdomain` ignores `rand.Read` error |
 | E8 | LOW | `ratelimit/ratelimit.go` | 64-72 | `WaitN` uses busy-wait with `time.Sleep(10ms)` — should use time-based reservation |
 
-### Resource Management (6 issues)
+### Resource Management (8 issues)
 
 | # | Severity | File | Line | Issue |
 |---|----------|------|------|-------|
-| R1 | MEDIUM | `server/http_edge.go` | 156 | 64 MB response fully buffered in memory before streaming |
-| R2 | MEDIUM | `server/http_edge.go` | 221-240 | WebSocket tunnels have no idle timeout (goroutine leak on idle connections) |
-| R3 | MEDIUM | `server/http_proxy.go` | 62 | 32 MB request body fully buffered in memory |
-| R4 | LOW | `server/server.go` | 706-730 | TCP listener `Close()` called twice (defer + goroutine) — harmless but redundant |
-| R5 | LOW | `server/inspect.go` | 80-86 | Request log slice grows/compacts on every overflow — could use ring buffer |
-| R6 | LOW | `mux/ringbuffer.go` | 36-66 | Ring buffer Write is byte-by-byte copy; `copy()` would be significantly faster |
+| R1 | CRITICAL | `mux/stream.go` | 218-229 | No receive-side flow control enforcement — 16 MB memory per stream, silent data loss |
+| R2 | HIGH | `mux/stream.go` | 114-123 | Flow control deadlock: window update failure after buffer consume — permanent stream stall |
+| R3 | MEDIUM | `server/http_edge.go` | 156 | 64 MB response fully buffered in memory before streaming |
+| R4 | MEDIUM | `server/http_edge.go` | 221-240 | WebSocket tunnels have no idle timeout (goroutine leak on idle connections) |
+| R5 | MEDIUM | `server/http_proxy.go` | 62 | 32 MB request body fully buffered in memory |
+| R6 | LOW | `server/server.go` | 706-730 | TCP listener `Close()` called twice (defer + goroutine) — harmless but redundant |
+| R7 | LOW | `server/inspect.go` | 80-86 | Request log slice grows/compacts on every overflow — could use ring buffer |
+| R8 | LOW | `mux/ringbuffer.go` | 36-66 | Ring buffer Write is byte-by-byte copy; `copy()` would be significantly faster |
 
-### Performance (5 issues)
+### Performance (7 issues)
 
 | # | Severity | File | Line | Issue |
 |---|----------|------|------|-------|
 | P1 | MEDIUM | `server/inspect.go` | 192-202 | `getTunnelByID` does O(N) full scan of all tunnels |
-| P2 | LOW | `proto/messages.go` | 102-105, 113-116 | Manual bit-shifting instead of `binary.BigEndian.PutUint64/Uint64` |
-| P3 | LOW | `proto/frame_test.go` | 270 | Benchmark allocates `bytes.Buffer` inside loop (inaccurate measurement) |
-| P4 | LOW | `server/server.go` | 858-873 | Port allocator `int32` wraps after 2^31 calls (theoretical) |
-| P5 | LOW | `auth/auth.go` | 107-122 | `ValidateToken` iterates all tokens with `Range` — O(N) per auth request |
+| P2 | MEDIUM | `mux/stream.go` | 232-233 | `onWindowUpdate` casts `uint32` delta to `int32` — large values wrap negative, stalling stream |
+| P3 | MEDIUM | `mux/mux.go` | 41 | `HeartbeatInterval` config set but never enforced — dead peer detection absent |
+| P4 | LOW | `proto/messages.go` | 102-105, 113-116 | Manual bit-shifting instead of `binary.BigEndian.PutUint64/Uint64` |
+| P5 | LOW | `proto/frame_test.go` | 270 | Benchmark allocates `bytes.Buffer` inside loop (inaccurate measurement) |
+| P6 | LOW | `server/server.go` | 858-873 | Port allocator `int32` wraps after 2^31 calls (theoretical) |
+| P7 | LOW | `auth/auth.go` | 107-122 | `ValidateToken` iterates all tokens with `Range` — O(N) per auth request |
 
-### Code Quality (5 issues)
+### Code Quality (8 issues)
 
 | # | Severity | File | Line | Issue |
 |---|----------|------|------|-------|
-| Q1 | LOW | `proto/frame.go` | 121-133 | `FrameReader` is a trivial wrapper adding no value over `ReadFrame()` |
-| Q2 | LOW | `proto/frame_test.go` | 83-117 | `wantErr` field declared but never set to `true` in TestFrameEncodeDecode |
-| Q3 | LOW | `server/server_test.go` | 557-562 | Incorrect assertion uses `t.Logf` instead of `t.Errorf` — masks regression |
-| Q4 | LOW | `server/inspect.go` | 178 | Replayed request always stores `Duration: 0` |
-| Q5 | LOW | `server/pin.go` | 98-131 | PIN page `fmt.Fprintf` uses `%%` escaping + `%s` mixing — fragile template |
+| Q1 | MEDIUM | `mux/ringbuffer.go` | 58 | `Write` returns `(0, nil)` when full — violates `io.Writer` contract; silent data loss |
+| Q2 | MEDIUM | `mux/mux.go` | 357-363 | Peer-controlled error string stored in `Err()` and terminates connection |
+| Q3 | LOW | `proto/frame.go` | 121-133 | `FrameReader` is a trivial wrapper adding no value over `ReadFrame()` |
+| Q4 | LOW | `proto/frame_test.go` | 83-117 | `wantErr` field declared but never set to `true` in TestFrameEncodeDecode |
+| Q5 | LOW | `server/server_test.go` | 557-562 | Incorrect assertion uses `t.Logf` instead of `t.Errorf` — masks regression |
+| Q6 | LOW | `server/inspect.go` | 178 | Replayed request always stores `Duration: 0` |
+| Q7 | LOW | `server/pin.go` | 98-131 | PIN page `fmt.Fprintf` uses `%%` escaping + `%s` mixing — fragile template |
+| Q8 | LOW | `mux/ringbuffer_test.go` | 191 | Skipped test acknowledges known `growLocked` correctness bug under wrap-around |
 
 ---
 
@@ -348,18 +441,26 @@ func DecodeJSONPayload(f *Frame, v any) error {
 ### Phase 2 — Soon (Concurrency & Resource)
 
 6. **Fix TOCTOU on tunnel count** (`server.go:518-536`) — Hold lock across check+insert
-7. **Make Magic immutable** (`constants.go:5`) — Use unexported `[4]byte` or function
-8. **Track TCP listener goroutine** (`server.go:706-714`) — Add to `s.wg`
-9. **Fix partial Start() cleanup** (`server.go:231-245`) — Close control listener on HTTP failure
-10. **Add WebSocket idle timeout** — Set deadline on hijacked connections
+7. **Fix stream Write spin after reset** (`stream.go:141`) — Check state after waking from windowCh
+8. **Add receive-side flow control** (`stream.go:218`) — Reject data exceeding window; don't silently discard
+9. **Fix flow-control deadlock** (`stream.go:114`) — Don't consume buffer bytes if window update fails
+10. **Fix window delta overflow** (`stream.go:232`) — Validate `uint32` delta before casting to `int32`
+11. **Fix OpenStream TOCTOU** (`mux.go:95`) — Hold mux lock or check done after streams.Store
+12. **Make Magic immutable** (`constants.go:5`) — Use unexported `[4]byte` or function
+13. **Track TCP listener goroutine** (`server.go:706-714`) — Add to `s.wg`
+14. **Fix partial Start() cleanup** (`server.go:231-245`) — Close control listener on HTTP failure
+15. **Add WebSocket idle timeout** — Set deadline on hijacked connections
 
 ### Phase 3 — Planned (Quality & Performance)
 
-11. **Stream responses instead of buffering** — Replace `io.ReadAll` with streaming copy
-12. **Add tunnel ID secondary index** — `sync.Map` keyed by tunnel ID
-13. **Fix PIN page template** — Separate CSS placeholder from error HTML injection
-14. **Replace busy-wait in rate limiter** — Use timer-based reservation
-15. **Optimize ring buffer** — Use `copy()` instead of byte-by-byte loop
+16. **Stream responses instead of buffering** — Replace `io.ReadAll` with streaming copy
+17. **Add tunnel ID secondary index** — `sync.Map` keyed by tunnel ID
+18. **Fix PIN page template** — Separate CSS placeholder from error HTML injection
+19. **Replace busy-wait in rate limiter** — Use timer-based reservation
+20. **Optimize ring buffer** — Use `copy()` instead of byte-by-byte loop
+21. **Implement dead peer detection** — Enforce `HeartbeatInterval` timeout in mux
+22. **Fix ringBuffer.Write contract** — Return `io.ErrShortWrite` when data is truncated
+23. **Make Reset() idempotent** — Add `sync.Once` guard like `Close()`
 
 ---
 
