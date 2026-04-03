@@ -398,6 +398,9 @@ func (s *Server) handleControlConnection(conn net.Conn) {
 // handleAuth authenticates a client connection.
 func (s *Server) handleAuth(m *mux.Mux, remoteAddr net.Addr) (*Session, error) {
 	// Wait for auth frame with timeout
+	authTimer := time.NewTimer(10 * time.Second)
+	defer authTimer.Stop()
+
 	select {
 	case frame := <-m.ControlFrame():
 		if frame.Type != proto.FrameAuthReq {
@@ -444,7 +447,7 @@ func (s *Server) handleAuth(m *mux.Mux, remoteAddr net.Addr) (*Session, error) {
 
 		return session, nil
 
-	case <-time.After(10 * time.Second):
+	case <-authTimer.C:
 		return nil, fmt.Errorf("auth timeout")
 
 	case <-s.ctx.Done():
@@ -740,8 +743,8 @@ func (s *Server) proxyTCPConnection(conn net.Conn, tunnel *Tunnel, session *Sess
 	if len(allowedIPs) > 0 {
 		remoteAddr := conn.RemoteAddr().String()
 		clientIP := remoteAddr
-		if idx := strings.LastIndex(clientIP, ":"); idx > 0 {
-			clientIP = clientIP[:idx]
+		if host, _, err := net.SplitHostPort(clientIP); err == nil {
+			clientIP = host
 		}
 		if !s.isIPAllowed(clientIP, allowedIPs) {
 			s.logger.Warn("TCP connection rejected by whitelist", "tunnel", tunnel.ID, "remote", remoteAddr)

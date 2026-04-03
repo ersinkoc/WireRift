@@ -37,8 +37,8 @@ func (s *Server) handleHTTPRequest(w http.ResponseWriter, r *http.Request) {
 
 	// Rate limit by client IP
 	clientIP := r.RemoteAddr
-	if idx := strings.LastIndex(clientIP, ":"); idx > 0 {
-		clientIP = clientIP[:idx]
+	if host, _, err := net.SplitHostPort(clientIP); err == nil {
+		clientIP = host
 	}
 	if !s.rateLimiter.Allow(clientIP) {
 		http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)

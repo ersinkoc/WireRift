@@ -3017,6 +3017,7 @@ func TestForwardHTTPRequestWebSocketDetection(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "http://test.wirerift.com/ws", nil)
 	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
 
 	s.forwardHTTPRequest(rr, req, session, tunnel)
 
@@ -4414,8 +4415,8 @@ func TestExtractSubdomain_CaseInsensitive(t *testing.T) {
 
 func TestHealthzEndpoint(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.ControlAddr = ":0"
-	cfg.HTTPAddr = ":0"
+	cfg.ControlAddr = "127.0.0.1:0"
+	cfg.HTTPAddr = "127.0.0.1:0"
 	cfg.HeartbeatInterval = time.Hour
 	cfg.SessionTimeout = time.Hour
 
@@ -4443,8 +4444,8 @@ func TestHealthzEndpoint(t *testing.T) {
 func TestRequestIDHeader(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Domain = "test.local"
-	cfg.ControlAddr = ":0"
-	cfg.HTTPAddr = ":0"
+	cfg.ControlAddr = "127.0.0.1:0"
+	cfg.HTTPAddr = "127.0.0.1:0"
 	cfg.HeartbeatInterval = time.Hour
 	cfg.SessionTimeout = time.Hour
 
@@ -4476,8 +4477,8 @@ func TestRequestIDHeader(t *testing.T) {
 func TestRequestIDPreserved(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Domain = "test.local"
-	cfg.ControlAddr = ":0"
-	cfg.HTTPAddr = ":0"
+	cfg.ControlAddr = "127.0.0.1:0"
+	cfg.HTTPAddr = "127.0.0.1:0"
 	cfg.HeartbeatInterval = time.Hour
 	cfg.SessionTimeout = time.Hour
 

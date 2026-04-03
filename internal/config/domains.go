@@ -97,6 +97,8 @@ func (m *DomainManager) RemoveDomain(domain string) error {
 
 // GetDomain gets a custom domain.
 func (m *DomainManager) GetDomain(domain string) (*CustomDomain, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if v, ok := m.domains.Load(domain); ok {
 		return v.(*CustomDomain), nil
 	}

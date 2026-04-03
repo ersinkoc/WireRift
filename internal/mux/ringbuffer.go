@@ -56,9 +56,20 @@ func (rb *ringBuffer) Write(data []byte) (int, error) {
 
 	n := 0
 	for n < len(data) && !rb.full {
-		rb.buf[rb.w] = data[n]
-		rb.w = (rb.w + 1) % rb.size
-		n++
+		// Calculate contiguous writable space from write cursor
+		var space int
+		if rb.w >= rb.r {
+			space = rb.size - rb.w
+		} else {
+			space = rb.r - rb.w
+		}
+		chunk := len(data) - n
+		if chunk > space {
+			chunk = space
+		}
+		copy(rb.buf[rb.w:rb.w+chunk], data[n:n+chunk])
+		rb.w = (rb.w + chunk) % rb.size
+		n += chunk
 		rb.full = rb.r == rb.w
 	}
 

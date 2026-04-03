@@ -135,6 +135,15 @@ func (s *Stream) Write(p []byte) (n int, err error) {
 	// Wait for window availability
 	total := 0
 	for total < len(p) {
+		// Recheck state on each iteration to detect close/reset during write
+		state = s.state.Load()
+		if state == streamStateClosed || state == streamStateHalfClosedLocal {
+			return total, ErrStreamClosed
+		}
+		if state == streamStateReset {
+			return total, ErrStreamReset
+		}
+
 		// Check how much we can send
 		window := s.window.Load()
 		if window <= 0 {
